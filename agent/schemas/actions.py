@@ -25,6 +25,7 @@ class ActionType(str, Enum):
     STATE_SNAPSHOT = "state_snapshot"
     CLARIFICATION = "clarification"
     AGENT_STEP = "agent_step"
+    GRAPH_SNAPSHOT = "graph_update"
 
 
 class BaseAction(BaseModel):
@@ -94,4 +95,24 @@ class AgentStepAction(BaseAction):
     thought: str
     status: str = "working"  # "working", "completed", "cancelled"
     artifact: Optional[Dict[str, Any]] = None
+
+
+class GraphNodePayload(BaseModel):
+    id: str
+    node_type: str  # "turn" | "entity" | "artifact"
+    label: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphEdgePayload(BaseModel):
+    source: str
+    target: str
+    edge_type: str  # "NEXT_TURN" | "SUPERSEDES" | "REFERENCES" | "PRODUCED" | "BRANCHES_FROM"
+
+
+class GraphUpdateAction(BaseAction):
+    action_type: ActionType = ActionType.GRAPH_SNAPSHOT
+    nodes: List[GraphNodePayload] = Field(default_factory=list)
+    edges: List[GraphEdgePayload] = Field(default_factory=list)
+    op: str = "append"  # "append" (incremental) | "full" (full resync, e.g. after rollback)
 

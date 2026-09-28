@@ -78,3 +78,67 @@ async def test_openrouter_live_tool_calling():
     assert resp.tool_name == "search_flights"
     assert "Delhi" in resp.arguments.get("origin", "")
     assert "Mumbai" in resp.arguments.get("destination", "")
+
+
+def test_backend_selection_prefers_groq_over_openrouter(monkeypatch):
+    from agent.llm_client import get_backend, GroqBackend, OpenRouterBackend, LocalQwenBackend
+
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.delenv("LLM_MODEL_NAME", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    config = LLMConfig()
+    assert config.backend_type == "groq"
+    assert config.base_url == "https://api.groq.com/openai/v1"
+    assert config.model_name == "openai/gpt-oss-120b"
+    assert isinstance(get_backend(config), GroqBackend)
+
+
+def test_backend_selection_falls_back_to_openrouter_without_groq(monkeypatch):
+    from agent.llm_client import get_backend, OpenRouterBackend
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    config = LLMConfig()
+    assert config.backend_type == "openrouter"
+    assert isinstance(get_backend(config), OpenRouterBackend)
+
+
+@pytest.mark.asyncio
+async def test_groq_live_tool_calling():
+    import os
+    if not os.getenv("GROQ_API_KEY"):
+        pytest.skip("GROQ_API_KEY not configured in environment")
+
+    from agent.llm_client import GroqBackend
+
+    config = LLMConfig()
+    backend = GroqBackend(config)
+    client = CircuitBreakerLLMClient(backend, config)
+
+    resp = await client.generate(
+        messages=[
+            {"role": "system", "content": "You are a test assistant. If the user asks for flights, call search_flights."},
+            {"role": "user", "content": "Find me flights from Delhi to Mumbai"},
+        ],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "search_flights",
+                "description": "Search for flights",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "origin": {"type": "string"},
+                        "destination": {"type": "string"},
+                    },
+                    "required": ["origin", "destination"],
+                },
+            },
+        }],
+    )
+
+    assert resp.response_type == "tool_call"
+    assert resp.tool_name == "search_flights"
+    assert "Delhi" in resp.arguments.get("origin", "")
+    assert "Mumbai" in resp.arguments.get("destination", "")

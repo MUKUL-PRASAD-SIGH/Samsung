@@ -28,6 +28,9 @@ from agent.schemas.actions import (
     ToolCallAction,
     ToolCancelAction,
     StateSnapshotAction,
+    GraphUpdateAction,
+    GraphNodePayload,
+    GraphEdgePayload,
 )
 from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
@@ -74,7 +77,9 @@ class AgentCoordinator:
     def get_or_create_session(self, session_id: str) -> SessionState:
         """Retrieve existing session or instantiate a new SessionState."""
         if session_id not in self.sessions:
-            self.sessions[session_id] = SessionState(session_id=session_id)
+            session = SessionState(session_id=session_id)
+            session.ensure_memory()
+            self.sessions[session_id] = session
         return self.sessions[session_id]
 
     async def start(self) -> None:
@@ -114,6 +119,46 @@ class AgentCoordinator:
         """Outbound interface: Put an action onto the Action Queue after trace validation."""
         self.trace_logger.log_action(action)
         await self.action_queue.put(action)
+
+    async def _commit_turn_and_emit_graph(
+        self,
+        session: SessionState,
+        agent_response: str,
+        artifacts: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Distill the current scratchpad turn into a CanonicalTurn, insert it into
+        graph_memory, and stream the resulting nodes/edges to the frontend. No-op if
+        this session never opted into the 2-tier memory system (session.ensure_memory()
+        not called)."""
+        if session.scratchpad is None or session.graph_memory is None:
+            return
+
+        canonical_turn = session.scratchpad.commit(agent_response=agent_response, artifacts=artifacts)
+        turn_node = session.graph_memory.insert_turn(canonical_turn)
+
+        new_node_ids = {turn_node.id}
+        new_node_ids.update(e.id for e in session.graph_memory.get_entities_for_turn(turn_node.id))
+        new_node_ids.update(
+            a.id for a in session.graph_memory.artifacts.values() if a.source_turn_id == turn_node.id
+        )
+
+        payload = session.graph_memory.to_graph_payload()
+        nodes = [GraphNodePayload(**n) for n in payload["nodes"] if n["id"] in new_node_ids]
+        edges = [
+            GraphEdgePayload(**e)
+            for e in payload["edges"]
+            if e["source"] in new_node_ids or e["target"] in new_node_ids
+        ]
+
+        await self.emit_action(
+            GraphUpdateAction(
+                session_id=session.session_id,
+                epoch=session.epoch,
+                nodes=nodes,
+                edges=edges,
+                op="append",
+            )
+        )
 
     async def get_next_action(self, timeout: Optional[float] = None) -> BaseAction:
         """Outbound consumer: Read the next action from the Action Queue."""
@@ -226,6 +271,9 @@ class AgentCoordinator:
 
     async def _handle_user_text(self, session: SessionState, event: UserTextEvent) -> None:
         """Process user text: Tier 1 intent/interrupt classification, Tier 2 fast filler, Tier 3 planner."""
+        if session.scratchpad is not None:
+            session.scratchpad.append_utterance_chunk(event.text)
+
         # Tier 1 Interrupt / Intent-Shift Detection (§3, §7.2)
         classification = self.intent_classifier.classify_text(event.text)
         is_interrupt = classification["is_interrupt"]
@@ -253,8 +301,11 @@ class AgentCoordinator:
 
         # Tier 3 Slow-Path Planning (§3, §4)
         actions = await self.planner.plan(event, session)
+        turn_has_tool_call = False
+        agent_response_text = ""
         for action in actions:
             if isinstance(action, ToolCallAction):
+                turn_has_tool_call = True
                 await self.emit_action(action)
                 # Spawn background execution task
                 task = asyncio.create_task(
@@ -268,7 +319,16 @@ class AgentCoordinator:
                 )
                 session.attach_task(action.call_id, task)
             else:
+                if isinstance(action, SpokenResponseAction):
+                    agent_response_text = action.text
                 await self.emit_action(action)
+
+        # A turn that resolved synchronously (spoken_response/clarification, no tool
+        # call in flight) is complete right now -- commit it. Turns that spawned a
+        # tool call/agent worker commit later, in _handle_tool_result, once the
+        # result actually comes back.
+        if not turn_has_tool_call:
+            await self._commit_turn_and_emit_graph(session, agent_response=agent_response_text)
 
     async def dispatch_tool_call(
         self,
@@ -393,16 +453,25 @@ class AgentCoordinator:
             return
 
         # If an autonomous agent generated an artifact, emit an agent announcement
+        agent_response_text = ""
+        artifacts: List[Dict[str, Any]] = []
         if event.result and isinstance(event.result, dict) and "artifact" in event.result:
             art = event.result["artifact"]
             agent_name = event.result.get("agent_name", "Worker")
+            agent_response_text = (
+                f"Agent '{agent_name}' has successfully finished building '{art.get('title', 'artifact')}'. "
+                "The artifact is ready in your workspace."
+            )
+            artifacts = [art]
             spoken = SpokenResponseAction(
                 session_id=session.session_id,
                 epoch=session.epoch,
-                text=f"Agent '{agent_name}' has successfully finished building '{art.get('title', 'artifact')}'. The artifact is ready in your workspace.",
+                text=agent_response_text,
             )
             await self.emit_action(spoken)
 
         # Emit snapshot with updated completed state
         await self.emit_action(session.get_snapshot())
+
+        await self._commit_turn_and_emit_graph(session, agent_response=agent_response_text, artifacts=artifacts)
 

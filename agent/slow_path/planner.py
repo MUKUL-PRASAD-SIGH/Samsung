@@ -21,6 +21,7 @@ from agent.schemas.actions import (
 from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
 from agent.llm_client import LLMBackend, CircuitBreakerLLMClient, LLMConfig
+from agent.memory.context_builder import build_context_block, build_history_messages
 
 logger = logging.getLogger("agent.planner")
 
@@ -44,7 +45,10 @@ class Planner:
         """Generate reasoned actions (tool calls, responses, or clarifications) for user input."""
         actions: List[BaseAction] = []
 
-        # Prepare messages context
+        # Prepare messages context. build_context_block/build_history_messages are the
+        # single extension points for the 2-tier cognitive memory system (agent/memory/) --
+        # when a session has no graph_memory attached yet, build_history_messages returns
+        # [] and this degrades to exactly the original single-turn behavior.
         messages = [
             {
                 "role": "system",
@@ -56,12 +60,14 @@ class Planner:
                     "call 'spawn_agent' and create a tailored agent with a unique name (e.g. 'db_architect', 'vector_craft', 'sec_auditor', 'bob'), "
                     "an exact specialization role, custom system_prompt, tailored step-by-step thinking plan, and expected_artifact. "
                     "Extract slot arguments accurately. "
-                    f"Current session intent: {session.intent or 'unknown'}. "
-                    f"Current slots: {session.slots}."
+                    "If you detect entities worth remembering (locations, dates, components, etc.) or a shift in "
+                    "the user's overall intent, append a trailing line of the exact form "
+                    'MEMORY_UPDATE: {"entities": [{"type": "LOCATION", "key": "destination", "value": "BOM"}], "intent_shift": null} '
+                    "after your normal response. Omit it entirely if there is nothing new to record. "
+                    f"{build_context_block(session)}"
                 ),
             },
-
-
+            *build_history_messages(session),
             {"role": "user", "content": event.text},
         ]
 
@@ -69,6 +75,16 @@ class Planner:
 
         # Generate LLM response through circuit-breaker-wrapped client
         llm_resp = await self.client.generate(messages, tools=tools)
+
+        if llm_resp.memory_update and session.scratchpad is not None:
+            for ent in llm_resp.memory_update.get("entities", []) or []:
+                try:
+                    session.scratchpad.record_entity_candidate(ent["type"], ent["key"], ent["value"])
+                except (KeyError, TypeError):
+                    logger.warning("Malformed entity in MEMORY_UPDATE: %r", ent)
+            intent_shift = llm_resp.memory_update.get("intent_shift")
+            if intent_shift:
+                session.scratchpad.record_intent_shift(intent_shift)
 
         if llm_resp.response_type == "tool_call" and llm_resp.tool_name:
             call_id = f"call_{uuid.uuid4().hex[:8]}"

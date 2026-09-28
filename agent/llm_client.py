@@ -26,21 +26,46 @@ load_dotenv()
 logger = logging.getLogger("agent.llm_client")
 
 
+def _default_backend_type() -> str:
+    if os.getenv("GROQ_API_KEY"):
+        return "groq"
+    if os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    if os.getenv("USE_LOCAL_LLM"):
+        return "local"
+    return "mock"
+
+
 class LLMConfig(BaseModel):
-    backend_type: str = Field(
-        default_factory=lambda: "openrouter" if os.getenv("OPENROUTER_API_KEY") else ("local" if os.getenv("USE_LOCAL_LLM") else "mock")
-    )
+    backend_type: str = Field(default_factory=_default_backend_type)
     model_name: str = Field(
-        default_factory=lambda: os.getenv("LLM_MODEL_NAME", "qwen/qwen-2.5-7b-instruct")
+        default_factory=lambda: os.getenv(
+            "LLM_MODEL_NAME",
+            # Note: Groq's available model set is org/account-specific and changes
+            # over time (verify with GET /openai/v1/models against your own key --
+            # e.g. llama-3.3-70b-versatile and qwen/qwen3.8-27b were unavailable
+            # or org-blocked on the account this was built against).
+            "openai/gpt-oss-120b" if os.getenv("GROQ_API_KEY") else "qwen/qwen-2.5-7b-instruct",
+        )
     )
     api_key: Optional[str] = Field(
-        default_factory=lambda: os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        default_factory=lambda: os.getenv("GROQ_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
     )
     base_url: str = Field(
-        default_factory=lambda: os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1" if os.getenv("OPENROUTER_API_KEY") else "http://localhost:8000/v1")
+        default_factory=lambda: os.getenv(
+            "LLM_BASE_URL",
+            "https://api.groq.com/openai/v1"
+            if os.getenv("GROQ_API_KEY")
+            else ("https://openrouter.ai/api/v1" if os.getenv("OPENROUTER_API_KEY") else "http://localhost:8000/v1"),
+        )
     )
     timeout_s: float = Field(
-        default_factory=lambda: float(os.getenv("LLM_TIMEOUT_S", "5.0" if os.getenv("OPENROUTER_API_KEY") else "2.0"))
+        default_factory=lambda: float(
+            os.getenv(
+                "LLM_TIMEOUT_S",
+                "4.0" if os.getenv("GROQ_API_KEY") else ("5.0" if os.getenv("OPENROUTER_API_KEY") else "2.0"),
+            )
+        )
     )
     max_consecutive_timeouts: int = 3
     temperature: float = 0.1
@@ -53,6 +78,26 @@ class LLMResponse(BaseModel):
     arguments: Dict[str, Any] = Field(default_factory=dict)
     raw_text: Optional[str] = None
     latency_s: float = 0.0
+    memory_update: Optional[Dict[str, Any]] = None
+
+
+def _extract_memory_update(content: Optional[str]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Strip a trailing 'MEMORY_UPDATE: {...}' JSON blob out of LLM content, if present.
+
+    This is the one place slot/entity extraction from the LLM's own output happens --
+    there is no other extraction path anywhere in the codebase. Returns
+    (cleaned_content, memory_update_dict_or_None). Any parse failure is swallowed and
+    treated as "no memory update" so a malformed blob never breaks the response.
+    """
+    if not content or "MEMORY_UPDATE:" not in content:
+        return content, None
+
+    prefix, _, suffix = content.partition("MEMORY_UPDATE:")
+    try:
+        memory_update = json.loads(suffix.strip())
+    except (json.JSONDecodeError, ValueError):
+        return content, None
+    return prefix.strip(), memory_update
 
 
 class LLMBackend(ABC):
@@ -182,10 +227,91 @@ class OpenRouterBackend(LLMBackend):
                 arguments=args,
                 raw_text=json.dumps(tc),
             )
+        cleaned_content, memory_update = _extract_memory_update(choice.get("content", ""))
         return LLMResponse(
             response_type="spoken_response",
-            content=choice.get("content", ""),
+            content=cleaned_content,
             raw_text=choice.get("content", ""),
+            memory_update=memory_update,
+        )
+
+
+class GroqBackend(LLMBackend):
+    """Groq LPU-hosted inference client (OpenAI-compatible chat completions API).
+
+    Chosen for this interruptible, full-duplex agent because Groq's inference
+    latency (time-to-first-token, tokens/sec) is substantially lower than routing
+    through OpenRouter, which matters directly for the epoch/barge-in model's
+    responsiveness budget (see CircuitBreakerLLMClient's hard timeout deadline).
+    """
+
+    def __init__(self, config: LLMConfig):
+        self.config = config
+
+    async def generate(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
+        import urllib.request
+        import urllib.error
+
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+            # Groq's API sits behind Cloudflare, which blocks urllib's default
+            # "Python-urllib/x.y" User-Agent as a bot signature (HTTP 403 / error
+            # code 1010) even with a valid API key -- a normal-looking UA avoids it.
+            "User-Agent": "interruptible-agent/1.0 (+https://github.com)",
+        }
+        payload: Dict[str, Any] = {
+            "model": self.config.model_name,
+            "messages": messages,
+            "temperature": self.config.temperature,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.config.base_url.rstrip('/')}/chat/completions",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+
+        def _do_request():
+            try:
+                with urllib.request.urlopen(req, timeout=self.config.timeout_s) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                err_text = e.read().decode("utf-8", errors="replace")
+                logger.error("Groq HTTP %d error: %s", e.code, err_text)
+                raise RuntimeError(f"Groq HTTP {e.code}: {err_text}") from e
+            except urllib.error.URLError as e:
+                logger.error("Groq network error: %s", e)
+                raise
+
+        loop = asyncio.get_running_loop()
+        res_json = await loop.run_in_executor(None, _do_request)
+
+        choice = res_json["choices"][0]["message"]
+        if "tool_calls" in choice and choice["tool_calls"]:
+            tc = choice["tool_calls"][0]["function"]
+            args = validate_and_repair(tc["arguments"])
+            return LLMResponse(
+                response_type="tool_call",
+                tool_name=tc["name"],
+                arguments=args,
+                raw_text=json.dumps(tc),
+            )
+
+        cleaned_content, memory_update = _extract_memory_update(choice.get("content", ""))
+        return LLMResponse(
+            response_type="spoken_response",
+            content=cleaned_content,
+            raw_text=choice.get("content", ""),
+            memory_update=memory_update,
         )
 
 
@@ -237,10 +363,12 @@ class LocalQwenBackend(LLMBackend):
                 arguments=args,
                 raw_text=json.dumps(tc),
             )
+        cleaned_content, memory_update = _extract_memory_update(choice.get("content", ""))
         return LLMResponse(
             response_type="spoken_response",
-            content=choice.get("content", ""),
+            content=cleaned_content,
             raw_text=choice.get("content", ""),
+            memory_update=memory_update,
         )
 
 
@@ -294,7 +422,9 @@ class CircuitBreakerLLMClient:
 
 def get_backend(config: LLMConfig) -> LLMBackend:
     """Factory creating LLM backend according to configuration."""
-    if config.backend_type == "openrouter":
+    if config.backend_type == "groq":
+        return GroqBackend(config)
+    elif config.backend_type == "openrouter":
         return OpenRouterBackend(config)
     elif config.backend_type == "local":
         return LocalQwenBackend(config)

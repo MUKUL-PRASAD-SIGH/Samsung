@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from agent.schemas.actions import (
@@ -23,6 +23,10 @@ from agent.schemas.actions import (
     InFlightCallInfo,
 )
 from agent.coordination.idempotency import IdempotencyStore
+
+if TYPE_CHECKING:
+    from agent.memory.scratchpad import TurnScratchpad
+    from agent.memory.graph_memory import GraphMemory
 
 
 class InFlightCall(BaseModel):
@@ -52,9 +56,26 @@ class SessionState:
         self.max_history: int = max_history
         self._history: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
-        
+
+        # 2-tier cognitive memory (agent/memory/*). Lazily initialized via
+        # ensure_memory() to avoid a state_machine.py <-> memory/*.py import
+        # cycle; stays None for sessions that never opt in (e.g. bare
+        # SessionState() instances constructed directly by tests), so all
+        # existing behavior below is completely unaffected.
+        self.scratchpad: Optional["TurnScratchpad"] = None
+        self.graph_memory: Optional["GraphMemory"] = None
+
         # Record initial snapshot
         self._save_to_history()
+
+    def ensure_memory(self) -> None:
+        """Lazily attach the L1 scratchpad and L2 graph memory to this session."""
+        if self.graph_memory is None:
+            from agent.memory.graph_memory import GraphMemory
+            self.graph_memory = GraphMemory(self)
+        if self.scratchpad is None:
+            from agent.memory.scratchpad import TurnScratchpad
+            self.scratchpad = TurnScratchpad(self)
 
     def _save_to_history(self) -> None:
         """Save current slot/intent state to the history ring buffer."""
@@ -110,6 +131,8 @@ class SessionState:
                         reason=reason,
                     )
                 )
+                if self.scratchpad is not None:
+                    self.scratchpad.mark_aborted(call.call_id, call.tool_name, reason)
 
         return cancellations
 
