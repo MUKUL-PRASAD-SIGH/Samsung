@@ -180,7 +180,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
-  const [activeRightTab, setActiveRightTab] = useState('agents'); // 'agents' | 'snapshot' | 'trace'
+  const [activeRightTab, setActiveRightTab] = useState('agents'); // 'agents' | 'snapshot' | 'trace' | 'graph'
   const [copiedCode, setCopiedCode] = useState(false);
   const [epochPulsing, setEpochPulsing] = useState(false);
 
@@ -188,9 +188,17 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [spawnedBots, setSpawnedBots] = useState([]);
   const [artifact, setArtifact] = useState(null);
+  // True while a real spawn_agent worker is running but hasn't produced its
+  // artifact yet -- drives a loading state instead of showing stale/unrelated content.
+  const [artifactLoading, setArtifactLoading] = useState(false);
+
+  // Cognitive Graph state (turn/entity/artifact nodes + edges streamed via graph_update actions)
+  const [graphNodes, setGraphNodes] = useState([]);
+  const [graphEdges, setGraphEdges] = useState([]);
+  const [selectedGraphNode, setSelectedGraphNode] = useState(null);
 
   // Settings State
-  const [selectedModel, setSelectedModel] = useState('qwen/qwen-2.5-7b-instruct');
+  const [selectedModel, setSelectedModel] = useState('openai/gpt-oss-120b');
   const [asrEngine] = useState('faster-whisper (small.en)');
 
   // Chats list matching the screenshots
@@ -270,6 +278,13 @@ export default function App() {
     ]);
   };
 
+  const formatArguments = (args) => {
+    if (!args || Object.keys(args).length === 0) return 'no arguments';
+    return Object.entries(args)
+      .map(([key, value]) => `${key.replace(/_/g, ' ')}: ${value}`)
+      .join(', ');
+  };
+
   const getBotRoleName = (toolName) => {
     const mapping = {
       search_flights: 'Flight Scout',
@@ -316,9 +331,9 @@ export default function App() {
         arguments: action.arguments,
         epoch: action.epoch,
         status: 'working',
-        thought: isAgentSpawn 
+        thought: isAgentSpawn
           ? `Initializing agent ${botName} for: ${action.arguments?.goal || 'task'}...`
-          : `Processing ${action.tool_name} with arguments ${JSON.stringify(action.arguments)}...`,
+          : `Processing request (${formatArguments(action.arguments)})`,
         step: 0,
         total_steps: 4,
       };
@@ -330,15 +345,12 @@ export default function App() {
 
       addTrace('tool_call', `SPAWNED ${newBot.name} (${newBot.role}) [ID: ${action.call_id}] under Epoch ${action.epoch}`, action.arguments);
 
-      // If tool generates code/artifact, open right sidebar automatically!
-      if (action.tool_name === 'generate_code' || action.tool_name.includes('code') || action.tool_name.includes('artifact')) {
-        setArtifact({
-          title: action.arguments?.component ? `${action.arguments.component}.tsx` : 'GeneratedComponent.tsx',
-          language: action.arguments?.language?.toLowerCase() || 'typescript',
-          content: SAMPLE_CODE,
-          author: action.arguments?.name || action.arguments?.agent_name || 'bob',
-          description: `Hi, I am ${action.arguments?.name || action.arguments?.agent_name || 'bob'}. Here is the code for your request.`,
-        });
+      // A real autonomous worker was just spawned -- open the workspace panel in a
+      // loading state right away so the user sees progress immediately, instead of
+      // waiting for the final artifact (or worse, showing unrelated placeholder code).
+      if (isAgentSpawn) {
+        setArtifact(null);
+        setArtifactLoading(true);
         setRightSidebarOpen(true);
       }
 
@@ -368,7 +380,12 @@ export default function App() {
       addTrace('agent_step', `[${action.name}] Step ${action.step}/${action.total_steps}: ${action.thought}`);
 
       if (action.artifact) {
-        setArtifact(action.artifact);
+        setArtifact({
+          ...action.artifact,
+          author: action.name,
+          description: `Hi, I am ${action.name}. Here is the ${action.artifact.language || 'code'} for your request.`,
+        });
+        setArtifactLoading(false);
         setRightSidebarOpen(true);
       }
 
@@ -389,6 +406,25 @@ export default function App() {
       );
 
       addTrace('tool_cancel', `ABORTED bot for call ${action.call_id} (${action.tool_name}): ${action.reason}`);
+
+      // Don't leave the workspace panel spinning forever if the worker that was
+      // going to produce the artifact got cancelled mid-flight (e.g. user interrupt).
+      if (!artifact) {
+        setArtifactLoading(false);
+      }
+
+    } else if (action.action_type === 'graph_update') {
+      if (action.op === 'full') {
+        setGraphNodes(action.nodes || []);
+        setGraphEdges(action.edges || []);
+      } else {
+        setGraphNodes((prev) => {
+          const existingIds = new Set(prev.map((n) => n.id));
+          return [...prev, ...(action.nodes || []).filter((n) => !existingIds.has(n.id))];
+        });
+        setGraphEdges((prev) => [...prev, ...(action.edges || [])]);
+      }
+      addTrace('graph_update', `Cognitive Graph: +${(action.nodes || []).length} node(s), +${(action.edges || []).length} edge(s)`, action);
 
     } else if (action.action_type === 'filler') {
       setMessages((prev) => [
@@ -415,21 +451,12 @@ export default function App() {
         }
       ]);
       addTrace('response', `Agent Output: ${action.text.slice(0, 80)}...`);
-
-      // If spoken response contains code or mentions building an artifact
-      const textLower = action.text.toLowerCase();
-      if ((textLower.includes('analog clock') || textLower.includes('```') || textLower.includes('script') || textLower.includes('bob')) && !artifact) {
-        setArtifact(DEMO_CLOCK_ARTIFACT);
-        setRightSidebarOpen(true);
-      }
     }
   };
 
   const handleSendMessage = (customText = null) => {
     const text = (customText !== null ? customText : inputText).trim();
     if (!text) return;
-
-    const textLower = text.toLowerCase();
 
     // Add user message
     setMessages((prev) => [
@@ -441,32 +468,12 @@ export default function App() {
       }
     ]);
 
-    // Send to backend via WebSocket
+    // Send to backend via WebSocket. Whether an agent gets spawned and an artifact
+    // gets produced is entirely up to the real backend/LLM response (tool_call /
+    // agent_step actions handled in handleIncomingAction) -- not guessed here from
+    // keywords in the raw text.
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'user_text', text }));
-    }
-
-    // Artifact detection: if user requests script, code, clock, component, build
-    const isArtifactIntent = textLower.includes('clock') || 
-                             textLower.includes('script') || 
-                             textLower.includes('typescript') || 
-                             textLower.includes('code') || 
-                             textLower.includes('build') ||
-                             textLower.includes('component');
-
-    if (isArtifactIntent) {
-      // Spawn bob if not present
-      if (!spawnedBots.some(b => b.name === 'bob')) {
-        setSpawnedBots((prev) => [
-          ...prev,
-          {
-            ...DEMO_CLOCK_BOT,
-            epoch: snapshot.epoch,
-          }
-        ]);
-      }
-      setArtifact(DEMO_CLOCK_ARTIFACT);
-      setRightSidebarOpen(true);
     }
 
     setInputText('');
@@ -508,7 +515,8 @@ export default function App() {
   };
 
   const handleCopyCode = () => {
-    navigator.clipboard.writeText(artifact?.content || SAMPLE_CODE);
+    if (!artifact?.content) return;
+    navigator.clipboard.writeText(artifact.content);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
   };
@@ -716,7 +724,7 @@ export default function App() {
               >
                 {rightSidebarOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
                 <span className="hidden md:inline">{rightSidebarOpen ? 'Collapse' : 'Artifact & Agents'}</span>
-                {artifact && !rightSidebarOpen && (
+                {(artifact || artifactLoading) && !rightSidebarOpen && (
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
                 )}
               </button>
@@ -876,63 +884,76 @@ export default function App() {
 
                 {/* TOP HALF: Agent Output & Code Display */}
                 <div className="flex-1 p-5 overflow-y-auto space-y-3 border-b border-white/5">
-                  {/* Agent header */}
-                  <div className="flex items-center gap-2 text-xs text-slate-200">
-                    <div className="w-5 h-5 rounded bg-sky-500/20 border border-sky-500/40 flex items-center justify-center">
-                      <Bot className="w-3 h-3 text-sky-400" />
-                    </div>
-                    <span>{artifact?.description || 'Hi, I am bob. Here is the code for your request.'}</span>
-                  </div>
+                  {artifact ? (
+                    <>
+                      {/* Agent header */}
+                      <div className="flex items-center gap-2 text-xs text-slate-200">
+                        <div className="w-5 h-5 rounded bg-sky-500/20 border border-sky-500/40 flex items-center justify-center">
+                          <Bot className="w-3 h-3 text-sky-400" />
+                        </div>
+                        <span>{artifact.description}</span>
+                      </div>
 
-                  {/* Dark Code Container with line numbers */}
-                  <div className="rounded-xl border border-white/10 bg-[#12141a]/95 overflow-hidden shadow-2xl">
-                    <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                      <span>{artifact?.title || 'AnalogClock.tsx'}</span>
-                      <button 
-                        onClick={handleCopyCode} 
-                        className="flex items-center gap-1 hover:text-white transition text-xs"
-                      >
-                        {copiedCode ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                        <span>{copiedCode ? 'Copied' : 'Copy'}</span>
-                      </button>
-                    </div>
-                    <div className="p-3 font-mono text-[11px] leading-relaxed overflow-x-auto text-slate-300 max-h-[340px]">
-                      <pre className="flex">
-                        {/* Line numbers */}
-                        <span className="select-none text-slate-600 pr-4 text-right border-r border-white/5">
-                          {(artifact?.content || SAMPLE_CODE).split('\n').map((_, i) => (
-                            <div key={i}>{i + 1}</div>
-                          ))}
-                        </span>
-                        {/* Code lines */}
-                        <code className="pl-4 text-slate-200">
-                          {(artifact?.content || SAMPLE_CODE).split('\n').map((line, idx) => {
-                            const isImport = line.includes('import') || line.includes('export') || line.includes('default') || line.includes('function') || line.includes('const') || line.includes('return');
-                            const isString = line.includes('"') || line.includes("'");
-                            const isHook = line.includes('useState') || line.includes('useEffect');
+                      {/* Dark Code Container with line numbers */}
+                      <div className="rounded-xl border border-white/10 bg-[#12141a]/95 overflow-hidden shadow-2xl">
+                        <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                          <span>{artifact.title}</span>
+                          <button
+                            onClick={handleCopyCode}
+                            className="flex items-center gap-1 hover:text-white transition text-xs"
+                          >
+                            {copiedCode ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                            <span>{copiedCode ? 'Copied' : 'Copy'}</span>
+                          </button>
+                        </div>
+                        <div className="p-3 font-mono text-[11px] leading-relaxed overflow-x-auto text-slate-300 max-h-[340px]">
+                          <pre className="flex">
+                            {/* Line numbers */}
+                            <span className="select-none text-slate-600 pr-4 text-right border-r border-white/5">
+                              {(artifact.content || '').split('\n').map((_, i) => (
+                                <div key={i}>{i + 1}</div>
+                              ))}
+                            </span>
+                            {/* Code lines */}
+                            <code className="pl-4 text-slate-200">
+                              {(artifact.content || '').split('\n').map((line, idx) => {
+                                const isImport = line.includes('import') || line.includes('export') || line.includes('default') || line.includes('function') || line.includes('const') || line.includes('return');
+                                const isString = line.includes('"') || line.includes("'");
+                                const isHook = line.includes('useState') || line.includes('useEffect');
 
-                            return (
-                              <div key={idx} className={isImport ? 'text-amber-400 font-semibold' : isString ? 'text-emerald-300' : isHook ? 'text-purple-300' : 'text-slate-300'}>
-                                {line || ' '}
-                              </div>
-                            );
-                          })}
-                        </code>
-                      </pre>
+                                return (
+                                  <div key={idx} className={isImport ? 'text-amber-400 font-semibold' : isString ? 'text-emerald-300' : isHook ? 'text-purple-300' : 'text-slate-300'}>
+                                    {line || ' '}
+                                  </div>
+                                );
+                              })}
+                            </code>
+                          </pre>
+                        </div>
+                      </div>
+                    </>
+                  ) : artifactLoading ? (
+                    <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+                      <div className="w-8 h-8 border-2 border-sky-500/30 border-t-sky-400 rounded-full animate-spin" />
+                      <p className="text-xs text-slate-400 font-mono">Agent is generating your artifact...</p>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+                      <p className="text-xs text-slate-500 font-mono">No artifact yet. Ask Flippy to build something.</p>
+                    </div>
+                  )}
                 </div>
 
-                {/* BOTTOM HALF: <List of agents here> (Matching Image 2 exactly) */}
+                {/* BOTTOM HALF: Agent Activity Panel */}
                 <div className="h-64 flex flex-col bg-[#111319]/90 border-t border-white/10 shrink-0">
                   {/* Section Header */}
                   <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between bg-black/30">
                     <div className="flex items-center gap-2">
                       <h2 className="text-base font-bold tracking-tight text-white font-sans">
-                        &lt;List of agents here&gt;
+                        Live Agent Activity
                       </h2>
                       <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-white/5">
-                        {spawnedBots.length} active
+                        {spawnedBots.filter((b) => b.status === 'working').length} active · {spawnedBots.length} total
                       </span>
                     </div>
 
@@ -955,6 +976,12 @@ export default function App() {
                         className={`px-2.5 py-1 rounded-md transition ${activeRightTab === 'trace' ? 'bg-[#282b34] text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
                       >
                         Trace
+                      </button>
+                      <button
+                        onClick={() => setActiveRightTab('graph')}
+                        className={`px-2.5 py-1 rounded-md transition ${activeRightTab === 'graph' ? 'bg-[#282b34] text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+                      >
+                        Cognitive Graph
                       </button>
                     </div>
                   </div>
@@ -1083,6 +1110,89 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* TAB 4: Cognitive Graph Visualizer */}
+                    {activeRightTab === 'graph' && (() => {
+                      const columns = { turn: 0, entity: 1, artifact: 2 };
+                      const colColors = { turn: '#38bdf8', entity: '#facc15', artifact: '#c084fc' };
+                      const colCounts = { turn: 0, entity: 0, artifact: 0 };
+                      const colWidth = 150;
+                      const rowHeight = 56;
+                      const positioned = graphNodes.map((node) => {
+                        const col = columns[node.node_type] ?? 0;
+                        const row = colCounts[node.node_type] ?? 0;
+                        colCounts[node.node_type] = row + 1;
+                        return { ...node, x: 40 + col * colWidth, y: 24 + row * rowHeight };
+                      });
+                      const byId = Object.fromEntries(positioned.map((n) => [n.id, n]));
+                      const svgHeight = Math.max(160, (Math.max(...Object.values(colCounts), 1)) * rowHeight + 48);
+
+                      return (
+                        <div className="space-y-2 font-mono text-[11px]">
+                          {graphNodes.length === 0 ? (
+                            <div className="text-center py-6 text-slate-500 text-xs font-mono">
+                              No cognitive graph yet. Turns, entities, and artifacts will appear here as the conversation progresses.
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-3 text-[10px] text-slate-400 px-1">
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-sky-400 inline-block" /> Turn</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" /> Entity</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-400 inline-block" /> Artifact</span>
+                              </div>
+                              <div className="bg-[#0f1117] rounded-lg border border-white/5 p-2 overflow-auto">
+                                <svg width={40 + 3 * colWidth} height={svgHeight}>
+                                  {graphEdges.map((edge, i) => {
+                                    const s = byId[edge.source];
+                                    const t = byId[edge.target];
+                                    if (!s || !t) return null;
+                                    const isBack = t.x <= s.x && edge.edge_type !== 'PRODUCED' && edge.edge_type !== 'REFERENCES';
+                                    return (
+                                      <line
+                                        key={`${edge.source}-${edge.target}-${i}`}
+                                        x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+                                        stroke={isBack ? '#f43f5e' : '#3f4657'}
+                                        strokeWidth={1.5}
+                                        strokeDasharray={edge.edge_type === 'SUPERSEDES' || edge.edge_type === 'BRANCHES_FROM' ? '3,3' : undefined}
+                                      />
+                                    );
+                                  })}
+                                  {positioned.map((node) => {
+                                    const fullLabel = node.label || '';
+                                    const displayLabel = fullLabel.length > 18 ? `${fullLabel.slice(0, 17)}…` : fullLabel;
+                                    return (
+                                      <g
+                                        key={node.id}
+                                        onClick={() => setSelectedGraphNode(node)}
+                                        style={{ cursor: 'pointer' }}
+                                      >
+                                        <title>{fullLabel}</title>
+                                        <circle cx={node.x} cy={node.y} r={7} fill={colColors[node.node_type] || '#94a3b8'} stroke="#0f1117" strokeWidth={2} />
+                                        <text x={node.x + 12} y={node.y + 4} fill="#cbd5e1" fontSize="9">
+                                          {displayLabel}
+                                        </text>
+                                      </g>
+                                    );
+                                  })}
+                                </svg>
+                              </div>
+                              {selectedGraphNode && (
+                                <div className="bg-[#161a24] p-2.5 rounded-lg border border-white/5 space-y-1">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-500 uppercase text-[10px]">{selectedGraphNode.node_type} node</span>
+                                    <button onClick={() => setSelectedGraphNode(null)} className="text-slate-500 hover:text-white">✕</button>
+                                  </div>
+                                  <div className="text-slate-200 font-semibold">{selectedGraphNode.label}</div>
+                                  <pre className="text-[10px] text-slate-400 whitespace-pre-wrap break-all">
+                                    {JSON.stringify(selectedGraphNode.data, null, 2)}
+                                  </pre>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     {/* TAB 3: Trace Logs */}
                     {activeRightTab === 'trace' && (
                       <div className="space-y-1.5 font-mono text-[11px]">
@@ -1139,7 +1249,8 @@ export default function App() {
                   onChange={(e) => setSelectedModel(e.target.value)}
                   className="w-full bg-[#1e212b] border border-white/10 rounded-xl px-3 py-2 text-slate-200 focus:outline-none focus:border-amber-400"
                 >
-                  <option value="qwen/qwen-2.5-7b-instruct">qwen/qwen-2.5-7b-instruct (Fast Re-planner)</option>
+                  <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Groq — Fast Re-planner)</option>
+                  <option value="qwen/qwen-2.5-7b-instruct">qwen/qwen-2.5-7b-instruct (OpenRouter)</option>
                   <option value="meta-llama/llama-3.1-8b-instruct">meta-llama/llama-3.1-8b-instruct</option>
                   <option value="google/gemini-2.0-flash">google/gemini-2.0-flash</option>
                 </select>
