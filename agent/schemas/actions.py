@@ -24,6 +24,7 @@ class ActionType(str, Enum):
     TOOL_CANCEL = "tool_cancel"
     STATE_SNAPSHOT = "state_snapshot"
     CLARIFICATION = "clarification"
+    AGENT_STEP = "agent_step"
 
 
 class BaseAction(BaseModel):
@@ -81,3 +82,16 @@ class StateSnapshotAction(BaseAction):
     slots: Dict[str, Any] = Field(default_factory=dict)
     in_flight_calls: List[InFlightCallInfo] = Field(default_factory=list)
     last_updated: str
+
+
+class AgentStepAction(BaseAction):
+    action_type: ActionType = ActionType.AGENT_STEP
+    call_id: str
+    name: str
+    role: str
+    step: int
+    total_steps: int
+    thought: str
+    status: str = "working"  # "working", "completed", "cancelled"
+    artifact: Optional[Dict[str, Any]] = None
+

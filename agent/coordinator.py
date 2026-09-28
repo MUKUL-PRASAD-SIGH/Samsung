@@ -319,17 +319,49 @@ class AgentCoordinator:
         arguments: Dict[str, Any],
         epoch: int,
     ) -> None:
-        """Run tool handler asynchronously and post ToolResultEvent."""
+        """Run tool handler or autonomous worker asynchronously and post ToolResultEvent."""
         result = None
         error = None
-        try:
-            result = await self.tool_router.execute_tool(tool_name, arguments)
-        except asyncio.CancelledError:
-            logger.info("Tool task '%s' (call_id=%s) cancelled", tool_name, call_id)
-            return
-        except Exception as e:
-            logger.exception("Error executing tool '%s': %s", tool_name, e)
-            error = str(e)
+
+        if tool_name == "spawn_agent":
+            from agent.workers.registry import create_agent_worker
+            clean_args = dict(arguments)
+            name = clean_args.pop("name", "bob")
+            role = clean_args.pop("role", "Worker")
+            goal = clean_args.pop("goal", "")
+            worker = create_agent_worker(
+                name=name,
+                role=role,
+                goal=goal,
+                session_id=session_id,
+                epoch=epoch,
+                call_id=call_id,
+                llm_backend=self.llm_backend,
+                **clean_args,
+            )
+
+
+            async def _step_callback(step_action):
+                await self.emit_action(step_action)
+
+
+            try:
+                result = await worker.execute(step_callback=_step_callback)
+            except asyncio.CancelledError:
+                logger.info("Autonomous worker '%s' (call_id=%s) cancelled under epoch %d", worker.name, call_id, epoch)
+                return
+            except Exception as e:
+                logger.exception("Error executing autonomous worker '%s': %s", worker.name, e)
+                error = str(e)
+        else:
+            try:
+                result = await self.tool_router.execute_tool(tool_name, arguments)
+            except asyncio.CancelledError:
+                logger.info("Tool task '%s' (call_id=%s) cancelled", tool_name, call_id)
+                return
+            except Exception as e:
+                logger.exception("Error executing tool '%s': %s", tool_name, e)
+                error = str(e)
 
         # Post result to inbound event queue
         await self.post_event(
@@ -344,7 +376,7 @@ class AgentCoordinator:
         )
 
     async def _handle_tool_result(self, session: SessionState, event: ToolResultEvent) -> None:
-        """Process tool completion event."""
+        """Process tool completion event and optionally announce completed artifacts."""
         completed = session.complete_tool_call(
             call_id=event.call_id,
             result=event.result,
@@ -360,5 +392,17 @@ class AgentCoordinator:
             )
             return
 
+        # If an autonomous agent generated an artifact, emit an agent announcement
+        if event.result and isinstance(event.result, dict) and "artifact" in event.result:
+            art = event.result["artifact"]
+            agent_name = event.result.get("agent_name", "Worker")
+            spoken = SpokenResponseAction(
+                session_id=session.session_id,
+                epoch=session.epoch,
+                text=f"Agent '{agent_name}' has successfully finished building '{art.get('title', 'artifact')}'. The artifact is ready in your workspace.",
+            )
+            await self.emit_action(spoken)
+
         # Emit snapshot with updated completed state
         await self.emit_action(session.get_snapshot())
+

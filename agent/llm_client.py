@@ -87,7 +87,22 @@ class MockLLMBackend(LLMBackend):
 
         # Default heuristic mock response
         last_msg = messages[-1]["content"].lower() if messages else ""
-        if "flight" in last_msg:
+        if any(k in last_msg for k in ("agent", "bob", "clock", "code", "build", "script", "typescript", "component", "scout")):
+            name = "bob" if "scout" not in last_msg else "scout"
+            role = "TypeScript Generator" if "scout" not in last_msg else "Market & Flight Scout"
+            goal = "Build AnalogClock component in TypeScript" if "scout" not in last_msg else "Search and compare travel options"
+            return LLMResponse(
+                response_type="tool_call",
+                tool_name="spawn_agent",
+                arguments={
+                    "name": name,
+                    "role": role,
+                    "goal": goal,
+                    "component": "AnalogClock",
+                    "language": "TypeScript",
+                },
+            )
+        elif "flight" in last_msg:
             return LLMResponse(
                 response_type="tool_call",
                 tool_name="search_flights",
@@ -99,6 +114,7 @@ class MockLLMBackend(LLMBackend):
                 tool_name="book_hotel",
                 arguments={"city": "Paris", "nights": 2},
             )
+
         return LLMResponse(
             response_type="spoken_response",
             content="How can I assist you with your booking?",

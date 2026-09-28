@@ -304,15 +304,23 @@ export default function App() {
       );
 
     } else if (action.action_type === 'tool_call') {
+      const isAgentSpawn = action.tool_name === 'spawn_agent';
+      const botName = isAgentSpawn ? (action.arguments?.name || 'bob') : getBotRoleName(action.tool_name);
+      const botRole = isAgentSpawn ? (action.arguments?.role || 'Autonomous Worker') : action.tool_name;
+
       const newBot = {
         call_id: action.call_id,
-        name: getBotRoleName(action.tool_name),
-        role: action.tool_name,
+        name: botName,
+        role: botRole,
         tool_name: action.tool_name,
         arguments: action.arguments,
         epoch: action.epoch,
         status: 'working',
-        thought: `Processing ${action.tool_name} with arguments ${JSON.stringify(action.arguments)}...`,
+        thought: isAgentSpawn 
+          ? `Initializing agent ${botName} for: ${action.arguments?.goal || 'task'}...`
+          : `Processing ${action.tool_name} with arguments ${JSON.stringify(action.arguments)}...`,
+        step: 0,
+        total_steps: 4,
       };
 
       setSpawnedBots((prev) => [
@@ -320,7 +328,7 @@ export default function App() {
         newBot
       ]);
 
-      addTrace('tool_call', `SPAWNED ${newBot.name} [ID: ${action.call_id}] under Epoch ${action.epoch}`, action.arguments);
+      addTrace('tool_call', `SPAWNED ${newBot.name} (${newBot.role}) [ID: ${action.call_id}] under Epoch ${action.epoch}`, action.arguments);
 
       // If tool generates code/artifact, open right sidebar automatically!
       if (action.tool_name === 'generate_code' || action.tool_name.includes('code') || action.tool_name.includes('artifact')) {
@@ -328,11 +336,42 @@ export default function App() {
           title: action.arguments?.component ? `${action.arguments.component}.tsx` : 'GeneratedComponent.tsx',
           language: action.arguments?.language?.toLowerCase() || 'typescript',
           content: SAMPLE_CODE,
-          author: action.arguments?.agent_name || 'bob',
-          description: `Hi, I am ${action.arguments?.agent_name || 'bob'}. Here is the code for your request.`,
+          author: action.arguments?.name || action.arguments?.agent_name || 'bob',
+          description: `Hi, I am ${action.arguments?.name || action.arguments?.agent_name || 'bob'}. Here is the code for your request.`,
         });
         setRightSidebarOpen(true);
       }
+
+    } else if (action.action_type === 'agent_step') {
+      setSpawnedBots((prev) => {
+        const existing = prev.find(b => b.call_id === action.call_id);
+        const updated = {
+          call_id: action.call_id,
+          name: action.name || (existing ? existing.name : 'bob'),
+          role: action.role || (existing ? existing.role : 'Worker'),
+          tool_name: 'spawn_agent',
+          arguments: existing?.arguments || {},
+          epoch: action.epoch,
+          status: action.status || 'working',
+          thought: action.thought,
+          step: action.step,
+          total_steps: action.total_steps,
+        };
+
+        if (existing) {
+          return prev.map(b => b.call_id === action.call_id ? updated : b);
+        } else {
+          return [...prev, updated];
+        }
+      });
+
+      addTrace('agent_step', `[${action.name}] Step ${action.step}/${action.total_steps}: ${action.thought}`);
+
+      if (action.artifact) {
+        setArtifact(action.artifact);
+        setRightSidebarOpen(true);
+      }
+
 
     } else if (action.action_type === 'tool_cancel') {
       setSpawnedBots((prev) => 
@@ -981,6 +1020,21 @@ export default function App() {
                                       : bot.thought}
                                   </p>
 
+                                  {bot.total_steps > 0 && bot.step > 0 && !isCancelled && (
+                                    <div className="mt-1.5 space-y-1">
+                                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                                        <span>Step {bot.step}/{bot.total_steps}</span>
+                                        <span className="text-sky-300 font-semibold">{Math.round((bot.step / bot.total_steps) * 100)}%</span>
+                                      </div>
+                                      <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                                        <div 
+                                          className={`h-full transition-all duration-300 ${bot.status === 'completed' ? 'bg-emerald-400' : 'bg-sky-400'}`}
+                                          style={{ width: `${Math.round((bot.step / bot.total_steps) * 100)}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+
                                   <div className="mt-1.5 flex items-center justify-between text-[10px] text-slate-500 font-mono">
                                     <span>Epoch #{bot.epoch} · ID: {bot.call_id}</span>
                                     {isWorking && (
@@ -989,6 +1043,7 @@ export default function App() {
                                       </span>
                                     )}
                                   </div>
+
                                 </div>
                               </div>
                             );

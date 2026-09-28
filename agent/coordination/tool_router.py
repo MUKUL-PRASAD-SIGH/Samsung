@@ -162,6 +162,44 @@ class ToolRouter:
             handler=_cancel_booking,
         )
 
+        async def _spawn_agent(name: str = "bob", role: str = "Autonomous Worker", goal: str = "Execute task", **kwargs):
+            # Handled directly by coordinator execution engine for streaming
+            return {"status": "completed", "agent_name": name, "role": role, "goal": goal}
+
+        self.register_tool(
+            name="spawn_agent",
+            description="Synthesize and spawn a bespoke autonomous agent with custom persona, plan, and artifact requirements",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Agent name, e.g. db_architect, vector_craft, sec_auditor, bob, scout"},
+                    "role": {"type": "string", "description": "Agent specialization title and persona, e.g. PostgreSQL Scaling Specialist, SVG Motion Engineer"},
+                    "goal": {"type": "string", "description": "Exact objective and task requirements for the agent"},
+                    "system_prompt": {"type": "string", "description": "Custom system instructions and domain expertise defining this agent's persona"},
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Step-by-step thinking plan tailored to this exact request",
+                    },
+                    "expected_artifact": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "File or artifact name, e.g. schema.sql, Gauge.svg, audit.md"},
+                            "language": {"type": "string", "description": "Syntax language, e.g. sql, svg, python, markdown, typescript"},
+                        },
+                        "description": "Bespoke artifact specifications",
+                    },
+                    "component": {"type": "string", "description": "Target component or entity name if applicable"},
+                    "language": {"type": "string", "description": "Programming language if code-related"},
+                },
+                "required": ["name", "role", "goal"],
+            },
+            is_state_modifying=False,
+            handler=_spawn_agent,
+        )
+
+
+
     def register_tool(
         self,
         name: str,
