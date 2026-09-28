@@ -1,0 +1,17 @@
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Environment secrets
+.env
+*.env.local
+
+# Python cache & tests
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Trace logs
+trace.jsonl
+*.log

@@ -1,0 +1,21 @@
+[project]
+name = "interruptible-agent"
+version = "0.1.0"
+description = "Full-duplex interruptible real-time agent system"
+readme = "interruptible-agents-build-plan(1).md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "pydantic>=2.0",
+    "jsonschema>=4.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
