@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections import deque
 from typing import Any, Dict, List, Optional
 from agent.schemas.actions import BaseAction, ToolCallAction, ToolCancelAction, StateSnapshotAction
 from agent.schemas.events import BaseEvent
@@ -44,7 +43,8 @@ class TraceLogger:
     ):
         self.log_file = log_file
         self.max_file_bytes = max_file_bytes
-        self.trace_history: deque = deque(maxlen=max_history)
+        self.max_history = max_history
+        self.trace_history: List[Dict[str, Any]] = []
         # Per-session tracked state for invariant checking
         self._session_epochs: Dict[str, int] = {}
         self._registered_call_ids: Dict[str, set] = {}
@@ -110,6 +110,8 @@ class TraceLogger:
     def _append_record(self, record: Dict[str, Any]) -> None:
         """Append record to memory and optional JSON-lines file."""
         self.trace_history.append(record)
+        if len(self.trace_history) > self.max_history:
+            del self.trace_history[: len(self.trace_history) - self.max_history]
         if self.log_file:
             self._rotate_if_needed()
             with open(self.log_file, "a", encoding="utf-8") as f:
