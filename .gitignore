@@ -15,3 +15,9 @@ __pycache__/
 # Trace logs
 trace.jsonl
 *.log
+
+# Frontend build artifacts & tooling (build with `cd frontend && npm ci && npm run build`)
+frontend/node_modules/
+frontend/dist/
+.vite/
+.serena/

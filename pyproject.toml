@@ -13,10 +13,15 @@ dependencies = [
     "numpy>=1.24",
     "faster-whisper>=1.0",
     "av>=11.0",
+    "onnxruntime>=1.17",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pillow"]
+# Tier-1 semantic intent classification (§7.2); falls back to keyword heuristics if absent.
+embeddings = ["sentence-transformers>=2.5"]
+# Local/offline LLM serving tooling for the LocalQwenBackend's own server process.
+local = ["vllm>=0.4", "transformers>=4.40"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "pillow"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -26,4 +31,7 @@ build-backend = "setuptools.build_meta"
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["live: talks to a real network service (skipped/flaky offline or under rate limits)"]
+addopts = "-m 'not live'"
+markers = [
+    "live: talks to a real network service; excluded by default (skipped/flaky offline or under rate limits), run with `pytest -m live`.",
+]

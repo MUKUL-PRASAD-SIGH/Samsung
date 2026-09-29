@@ -52,7 +52,8 @@ class SessionState:
         self.slots: Dict[str, Any] = {}
         self.in_flight_calls: Dict[str, InFlightCall] = {}
         self.idempotency_store: IdempotencyStore = IdempotencyStore()
-        
+        self.last_activity: float = time.time()
+
         # History ring buffer for rollback (§7.4)
         self.max_history: int = max_history
         self._history: List[Dict[str, Any]] = []
@@ -71,6 +72,10 @@ class SessionState:
 
         # Record initial snapshot
         self._save_to_history()
+
+    def touch(self) -> None:
+        """Mark the session as recently active; resets the idle-eviction clock (gap #8)."""
+        self.last_activity = time.time()
 
     def ensure_memory(self) -> None:
         """Lazily attach the L1 scratchpad and L2 graph memory to this session."""

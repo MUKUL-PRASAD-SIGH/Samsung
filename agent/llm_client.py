@@ -88,6 +88,8 @@ class LLMResponse(BaseModel):
     raw_text: Optional[str] = None
     latency_s: float = 0.0
     memory_update: Optional[Dict[str, Any]] = None
+    # Set when this response came from the fallback backend (circuit open on the primary), §7.1.
+    via_fallback: bool = False
 
 
 _MEMORY_MARKER = re.compile(r"[*_`]*MEMORY_UPDATE[*_`]*\s*:?[*_`]*\s*")
@@ -468,9 +470,11 @@ class CircuitBreakerLLMClient:
     half-open step, one bad minute at the provider would degrade every request until restart.
     """
 
-    def __init__(self, backend: LLMBackend, config: LLMConfig):
+    def __init__(self, backend: LLMBackend, config: LLMConfig, fallback_backend: Optional[LLMBackend] = None):
         self.backend = backend
         self.config = config
+        self.fallback_backend = fallback_backend
+        self.fallback_calls = 0
         self.consecutive_timeouts = 0
         self.is_circuit_open = False
         self._opened_at: Optional[float] = None
@@ -501,10 +505,13 @@ class CircuitBreakerLLMClient:
         is_probe = False
         if self.is_circuit_open:
             if self._cooldown_elapsed() and not self._probe_in_flight:
-                # Half-open: exactly one caller probes the backend; everyone else keeps the fallback.
+                # Half-open: exactly one caller probes the primary; everyone else keeps using
+                # the fallback (or the static message, if no fallback is configured).
                 is_probe = True
                 self._probe_in_flight = True
                 logger.info("Circuit breaker HALF-OPEN. Probing LLM backend.")
+            elif self.fallback_backend is not None:
+                return await self._call_fallback(messages, tools)
             else:
                 logger.warning("Circuit breaker is OPEN. Returning fallback response.")
                 return LLMResponse(
@@ -528,6 +535,8 @@ class CircuitBreakerLLMClient:
                 self.config.timeout_s,
                 self.consecutive_timeouts,
             )
+            if self.is_circuit_open and self.fallback_backend is not None:
+                return await self._call_fallback(messages, tools)
             # Graceful fallback: clarification instead of blowing latency score (§7.1)
             return LLMResponse(
                 response_type="clarification",
@@ -539,6 +548,8 @@ class CircuitBreakerLLMClient:
             # raw exceptions and the user got no reply at all. Treat them as breaker failures.
             self._record_failure()
             logger.error("LLM backend error (%s: %s). Consecutive failures: %d", type(e).__name__, e, self.consecutive_timeouts)
+            if self.is_circuit_open and self.fallback_backend is not None:
+                return await self._call_fallback(messages, tools)
             return LLMResponse(
                 response_type="clarification",
                 content="I hit a snag reaching my reasoning engine — could you try that again?",
@@ -547,6 +558,28 @@ class CircuitBreakerLLMClient:
         finally:
             if is_probe:
                 self._probe_in_flight = False
+
+    async def _call_fallback(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]],
+    ) -> LLMResponse:
+        """Route to the smaller/faster fallback backend while the primary's circuit is open (§7.1)."""
+        self.fallback_calls += 1
+        try:
+            response = await asyncio.wait_for(
+                self.fallback_backend.generate(messages, tools),
+                timeout=self.config.timeout_s,
+            )
+            response.via_fallback = True
+            return response
+        except Exception as e:
+            logger.error("Fallback LLM backend also failed (%s: %s).", type(e).__name__, e)
+            return LLMResponse(
+                response_type="clarification",
+                content="I'm having trouble reaching my reasoning engine right now — please try again shortly.",
+                via_fallback=True,
+            )
 
 
 def get_backend(config: LLMConfig) -> LLMBackend:
@@ -558,3 +591,28 @@ def get_backend(config: LLMConfig) -> LLMBackend:
     elif config.backend_type == "local":
         return LocalQwenBackend(config)
     return MockLLMBackend()
+
+
+def get_fallback_backend() -> Optional[LLMBackend]:
+    """Build a smaller/faster fallback backend from LLM_FALLBACK_* env vars (§7.1).
+
+    Disabled (returns None) unless LLM_FALLBACK_MODEL_NAME is set, since a fallback with no
+    model configured would just be a second copy of the primary backend.
+    """
+    model_name = os.getenv("LLM_FALLBACK_MODEL_NAME")
+    if not model_name:
+        return None
+    fallback_api_key = (
+        os.getenv("LLM_FALLBACK_API_KEY")
+        or os.getenv("GROQ_API_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
+    config = LLMConfig(
+        backend_type=os.getenv("LLM_FALLBACK_BACKEND_TYPE", _default_backend_type()),
+        model_name=model_name,
+        api_key=fallback_api_key,
+        base_url=os.getenv("LLM_FALLBACK_BASE_URL") or LLMConfig().base_url,
+        timeout_s=float(os.getenv("LLM_FALLBACK_TIMEOUT_S", "4.0")),
+    )
+    return get_backend(config)

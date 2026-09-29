@@ -30,6 +30,8 @@ import {
   SlidersHorizontal,
   ChevronRight
 } from 'lucide-react';
+import MarkdownReply from './components/MarkdownReply';
+import TraceTimeline from './components/TraceTimeline';
 
 // Cute Animated SVG Robot Character for the Active Swarm
 function MiniBotAvatar({ status, isWatching }) {
@@ -330,6 +332,7 @@ export default function App() {
   }, [sessionId]);
 
   const addTrace = (type, text, payload = null) => {
+    const now = Date.now();
     setTraceLogs((prev) => [
       ...prev,
       {
@@ -337,7 +340,8 @@ export default function App() {
         type,
         text,
         payload,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        ts: now,
+        time: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       }
     ]);
   };
@@ -1037,7 +1041,7 @@ export default function App() {
                         <div className={`text-xs leading-relaxed ${
                           isFiller ? 'text-amber-300 italic' : 'text-slate-200'
                         }`}>
-                          {m.text}
+                          {isFiller ? m.text : <MarkdownReply text={m.text} />}
                         </div>
                       </div>
                     </div>
@@ -1454,6 +1458,7 @@ export default function App() {
                     {/* TAB 3: Trace Logs */}
                     {activeRightTab === 'trace' && (
                       <div className="space-y-1.5 font-mono text-[11px]">
+                        <TraceTimeline items={traceLogs} />
                         {traceLogs.map((item) => (
                           <div key={item.id} className="p-2 rounded bg-[#161a24] border border-white/5 space-y-0.5">
                             <div className="flex justify-between text-[10px]">

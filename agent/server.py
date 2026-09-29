@@ -17,14 +17,22 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 import base64
+import os
 from agent.coordinator import AgentCoordinator
 from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent, VideoFrameEvent
 from agent.schemas.actions import BaseAction
+from agent.trace_logger import TraceLogger
 
 logger = logging.getLogger("agent.server")
 
 # Global coordinator instance
-coordinator = AgentCoordinator()
+# Live sessions favor availability: a malformed trace record is dropped and counted rather than
+# taking the whole session down. Set TRACE_STRICT=1 to raise instead (matches dev/eval default).
+_trace_log_path = os.getenv("TRACE_LOG_PATH")
+_trace_strict = os.getenv("TRACE_STRICT", "0") == "1"
+coordinator = AgentCoordinator(
+    trace_logger=TraceLogger(log_file=_trace_log_path, strict=_trace_strict)
+)
 
 
 # session_id -> the inbox of every live connection for that session. The coordinator has ONE outbound action
@@ -34,6 +42,8 @@ coordinator = AgentCoordinator()
 # stole and dropped actions such as the acknowledgement filler.)
 _subscribers: Dict[str, Set[asyncio.Queue]] = {}
 INBOX_MAX = 2000
+# ~5 min of 16kHz mono PCM16 streaming audio, or a very generous single push-to-talk recording.
+MAX_BINARY_FRAME_BYTES = 10 * 1024 * 1024
 
 
 async def _dispatch_actions_loop() -> None:
@@ -72,6 +82,7 @@ async def health():
         "status": "ok",
         "sessions": len(coordinator.sessions),
         "asr": coordinator.asr_processor.info(),
+        "trace_dropped_records": coordinator.trace_logger.dropped_count,
     }
 
 
@@ -107,6 +118,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             if message.get("type") == "websocket.disconnect":
                 break
             if "bytes" in message and message["bytes"]:
+                if len(message["bytes"]) > MAX_BINARY_FRAME_BYTES:
+                    # Guards the ASR pipeline's own audio buffers, not the socket itself -- Starlette
+                    # has already buffered the frame in memory by the time we can see its size (gap #9).
+                    logger.warning(
+                        "Session %s sent an oversized binary frame (%d bytes); dropping.",
+                        session_id, len(message["bytes"]),
+                    )
+                    continue
                 if voice_streaming:
                     await coordinator.post_event(
                         AudioChunkEvent(
