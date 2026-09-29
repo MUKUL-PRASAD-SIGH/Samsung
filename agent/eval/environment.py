@@ -81,3 +81,25 @@ class Environment:
             return result
 
         return wrapped
+
+
+def instrument_vision(env: "Environment", coordinator) -> None:
+    """Record analyze_frame executions. The coordinator (not a router handler) runs this tool, so wrap it
+    directly; that also records the no-frame path where the vision backend is never called."""
+    original = coordinator._run_vision
+
+    async def recorded(session_id, arguments):
+        record = ExecRecord(tool="analyze_frame", args=dict(arguments), state_modifying=False, t_start=time.time())
+        env.executions.append(record)
+        try:
+            result = await original(session_id, arguments)
+        except asyncio.CancelledError:
+            record.cancelled, record.t_end = True, time.time()
+            raise
+        except Exception as e:
+            record.error, record.t_end = f"{type(e).__name__}: {e}", time.time()
+            raise
+        record.completed, record.t_end = True, time.time()
+        return result
+
+    coordinator._run_vision = recorded

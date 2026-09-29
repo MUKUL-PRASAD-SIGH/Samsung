@@ -21,7 +21,7 @@ dependencies = [
 embeddings = ["sentence-transformers>=2.5"]
 # Local/offline LLM serving tooling for the LocalQwenBackend's own server process.
 local = ["vllm>=0.4", "transformers>=4.40"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "pillow"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -33,5 +33,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-m 'not live'"
 markers = [
-    "live: hits a real network-dependent LLM/API provider; excluded by default, run with `pytest -m live`.",
+    "live: talks to a real network service; excluded by default (skipped/flaky offline or under rate limits), run with `pytest -m live`.",
 ]

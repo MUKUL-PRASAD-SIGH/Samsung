@@ -77,6 +77,33 @@ async def test_healthy_agent_blocks_the_rephrased_duplicate():
     assert s.safety.raw["duplicate_state_changes"] == 0 and s.total >= 0.95, "\n".join(s.notes)
 
 
+async def test_MUTATION_vision_result_never_re_plans_is_caught(monkeypatch):
+    async def no_continuation(self, session, request_text, result):
+        return None
+    monkeypatch.setattr(AgentCoordinator, "_continue_after_observation", no_continuation)
+
+    s = await score("vision_extract_arg")
+    assert s.task.parts["tool_recall"] < 1.0          # search_flights never happens: the observation went nowhere
+    assert any("search_flights" in n for n in s.task.notes)
+
+
+async def test_MUTATION_uncancellable_vision_call_is_caught(monkeypatch):
+    def bump_without_cancelling(self, reason="x"):
+        self.epoch += 1
+        return []
+    monkeypatch.setattr(SessionState, "bump_epoch", bump_without_cancelling)
+
+    s = await score("vision_interrupt")
+    assert s.interrupt.score == 0.0
+    assert s.task.parts["forbidden_calls_absent"] == 0.0   # analyze_frame ran to completion after "stop"
+
+
+async def test_healthy_vision_scenarios_including_irrelevant_frame_score_high():
+    names = ("vision_extract_arg", "vision_no_frame", "vision_interrupt", "vision_irrelevant_frame")
+    for name, s in zip(names, await asyncio.gather(*[score(n) for n in names])):
+        assert s.total >= 0.95, f"{name}: {s.total:.3f}\n" + "\n".join(s.notes)
+
+
 async def test_MUTATION_slots_not_applied_to_snapshot_is_caught(monkeypatch):
     monkeypatch.setattr(SessionState, "stage_call_slots", lambda self, call_id, values: {})
 

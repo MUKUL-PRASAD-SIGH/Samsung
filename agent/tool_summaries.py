@@ -93,6 +93,8 @@ def summarize_tool_result(tool_name: str, result: Any) -> str:
 
 
 def summarize_tool_error(tool_name: str, error: Optional[str]) -> str:
+    if tool_name == "analyze_frame":
+        return "I couldn't analyze the image right now -- the vision service is busy or unavailable. Want me to try again?"
     label = tool_name.replace("_", " ")
     detail = f" ({error})" if error else ""
     return f"Sorry, I couldn't complete {label}{detail}. Want me to try again?"

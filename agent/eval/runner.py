@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from agent.coordinator import AgentCoordinator
-from agent.eval.environment import Environment, ExecRecord
+from agent.eval.environment import Environment, ExecRecord, instrument_vision
 from agent.eval.scenario import Scenario, Step
 from agent.llm_client import LLMBackend, LLMConfig, LLMResponse, MockLLMBackend, get_backend
 from agent.multimodal.asr import ASRProcessor
-from agent.schemas.events import AudioChunkEvent, InterruptSignalEvent, UserTextEvent
+from agent.multimodal.vision import MockVisionBackend, OpenRouterVisionBackend, VisionBackend
+from agent.schemas.events import AudioChunkEvent, InterruptSignalEvent, UserTextEvent, VideoFrameEvent
 from agent.trace_logger import TraceLogger
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "audio"
@@ -114,6 +115,23 @@ def _pcm16k(path: Path, lead_s: float, tail_s: float) -> bytes:
     return b"\x00\x00" * int(16000 * lead_s) + raw + b"\x00\x00" * int(16000 * tail_s)
 
 
+def render_frame(text: str) -> bytes:
+    """A synthetic camera/screen frame: white text on a blue banner (deterministic, no fixture files)."""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (640, 360), (18, 60, 120))
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+    except OSError:
+        font = ImageFont.load_default(size=64)
+    ImageDraw.Draw(img).text((40, 130), text, fill=(255, 255, 255), font=font)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
 def _is_quiet(c: AgentCoordinator) -> bool:
     if c.event_queue._unfinished_tasks:  # an event is queued or mid-handling (e.g. awaiting the planner)
         return False
@@ -153,15 +171,21 @@ async def run_scenario(
     env = Environment(scenario.latency_s, scenario.faults)
     inner: LLMBackend = MockLLMBackend(canned_responses=list(scenario.mock_llm)) if mode == "mock" else get_backend(LLMConfig())
     backend = RecordingBackend(inner)
+    vision: VisionBackend = (
+        MockVisionBackend(list(scenario.mock_vision), latency_s=scenario.vision_latency_s)
+        if mode == "mock" else OpenRouterVisionBackend()
+    )
     trace = TraceLogger()
     coordinator = AgentCoordinator(
         tool_router=env.router, trace_logger=trace, llm_backend=backend,
-        asr_processor=asr or ASRProcessor(), enable_debounce=True,
+        asr_processor=asr or ASRProcessor(), vision_backend=vision, enable_debounce=True,
     )
+    instrument_vision(env, coordinator)
 
     if pacer is not None:
+        # scripted length ~= number of planner calls (an observation tool adds a continuation call)
         turns = sum(1 for s in scenario.steps if s.is_turn)
-        await pacer.reserve(turns * 1700)
+        await pacer.reserve(max(turns, len(scenario.mock_llm)) * 1700)
 
     await coordinator.start()
     t0 = time.time()
@@ -175,6 +199,10 @@ async def run_scenario(
             if step.kind == "voice":
                 voice_tasks.append(asyncio.create_task(_run_voice(coordinator, sid, step, box)))
                 await asyncio.sleep(0)  # let it stamp its timings
+            elif step.kind == "frame":
+                ev = VideoFrameEvent(session_id=sid, frame_data=render_frame(step.frame_text), mime="image/jpeg", source="harness")
+                box.update(t_sent=ev.timestamp, t_onset=ev.timestamp, t_done=ev.timestamp)
+                await coordinator.post_event(ev)
             elif step.kind == "interrupt":
                 ev = InterruptSignalEvent(session_id=sid, reason="user_barge_in")
                 box.update(t_sent=ev.timestamp, t_onset=ev.timestamp, t_done=ev.timestamp)

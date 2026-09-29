@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Menu, 
   Plus, 
@@ -7,6 +7,8 @@ import {
   Code2, 
   Mic, 
   MicOff, 
+  Camera,
+  ScreenShare,
   ArrowUp, 
   Bot, 
   Sparkles, 
@@ -220,6 +222,8 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false); // hands-free voice streaming is on
   const [isSpeaking, setIsSpeaking] = useState(false);     // server VAD currently hears the user
   const [livePartial, setLivePartial] = useState('');      // latest partial transcript of that speech
+  const [sharing, setSharing] = useState('off');           // 'off' | 'camera' | 'screen': frames streamed to the agent
+  const [lastFrameAt, setLastFrameAt] = useState(0);
   const [activeRightTab, setActiveRightTab] = useState('agents'); // 'agents' | 'snapshot' | 'trace' | 'graph'
   const [copiedCode, setCopiedCode] = useState(false);
   const [epochPulsing, setEpochPulsing] = useState(false);
@@ -276,6 +280,8 @@ export default function App() {
 
   const wsRef = useRef(null);
   const voiceRef = useRef(null); // { stream, ctx, node, sink } while streaming
+  const shareRef = useRef(null); // { stream, video, canvas, kind, timer } while sharing camera/screen
+  const previewVideoRef = useRef(null);
   const chatScrollRef = useRef(null);
   // What the user is currently producing but hasn't submitted: typed draft or live speech.
   const draftText = isSpeaking ? livePartial : inputText;
@@ -303,6 +309,7 @@ export default function App() {
     ws.onclose = () => {
       setConnected(false);
       stopVoiceStream(false); // the server dropped the stream too; just release the mic locally
+      stopSharing();
       addTrace('system', 'Disconnected from coordinator stream');
     };
 
@@ -317,6 +324,7 @@ export default function App() {
 
     return () => {
       stopVoiceStream(false);
+      stopSharing();
       ws.close();
     };
   }, [sessionId]);
@@ -350,6 +358,7 @@ export default function App() {
       check_weather: 'Weather Sentinel',
       cancel_booking: 'Reservation Operator',
       generate_code: 'Code Generator',
+      analyze_frame: 'Vision Analyst',
     };
     return mapping[toolName] || toolName.replace('_', ' ').toUpperCase();
   };
@@ -563,7 +572,7 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = (customText = null) => {
+  const handleSendMessage = async (customText = null) => {
     const text = (customText !== null ? customText : inputText).trim();
     if (!text) return;
 
@@ -581,6 +590,9 @@ export default function App() {
     // gets produced is entirely up to the real backend/LLM response (tool_call /
     // agent_step actions handled in handleIncomingAction) -- not guessed here from
     // keywords in the raw text.
+    setInputText('');
+    // "this" / "on my screen" must mean what is visible NOW, so push a fresh frame ahead of the text.
+    if (shareRef.current) await captureAndSendFrame();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'user_text', text }));
     }
@@ -629,6 +641,77 @@ export default function App() {
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
   };
+
+  // ---- camera / screen sharing -------------------------------------------------------------------
+  // Frames are only *buffered* server-side (1 fps, downscaled JPEG); the vision model runs solely when the
+  // agent decides a question needs the image, so sharing costs nothing until then.
+  const captureAndSendFrame = async () => {
+    const s = shareRef.current;
+    const ws = wsRef.current;
+    if (!s || !ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 1_000_000) return;
+    const v = s.video;
+    if (!v.videoWidth) return;
+    const scale = Math.min(1, 1024 / v.videoWidth);
+    const w = Math.round(v.videoWidth * scale);
+    const h = Math.round(v.videoHeight * scale);
+    s.canvas.width = w;
+    s.canvas.height = h;
+    s.canvas.getContext('2d').drawImage(v, 0, 0, w, h);
+    const blob = await new Promise((resolve) => s.canvas.toBlob(resolve, 'image/jpeg', 0.7));
+    if (!blob || !shareRef.current) return;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    ws.send(JSON.stringify({ type: 'video_frame', mime: 'image/jpeg', data: btoa(bin), source: s.kind, width: w, height: h }));
+    setLastFrameAt(Date.now());
+  };
+
+  const stopSharing = () => {
+    const s = shareRef.current;
+    shareRef.current = null;
+    if (s) {
+      clearInterval(s.timer);
+      s.stream.getTracks().forEach((track) => { track.onended = null; track.stop(); });
+      s.video.srcObject = null;
+    }
+    setSharing('off');
+  };
+
+  const startSharing = async (kind) => {
+    if (shareRef.current) stopSharing();
+    try {
+      const stream = kind === 'screen'
+        ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+        : await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      await video.play();
+      shareRef.current = { stream, video, canvas: document.createElement('canvas'), kind, timer: null };
+      // The browser's own "stop sharing" control ends the track: follow it.
+      stream.getVideoTracks()[0].onended = () => stopSharing();
+      shareRef.current.timer = setInterval(captureAndSendFrame, 1000);
+      setSharing(kind);
+      addTrace('vision', `Sharing ${kind} (1 frame/s, analyzed only when you ask about it)`);
+      await captureAndSendFrame();
+    } catch (err) {
+      alert(`${kind === 'screen' ? 'Screen share' : 'Camera'} error: ${err.message}`);
+    }
+  };
+
+  const toggleSharing = (kind) => (sharing === kind ? stopSharing() : startSharing(kind));
+
+  // Attach the live stream to the preview thumbnail whenever that <video> mounts. A callback ref (with a
+  // stable identity) is needed because the chip is a NEW element after the home -> chat view switch; an
+  // effect keyed on `sharing` never re-ran then, leaving the thumbnail blank.
+  const attachPreview = useCallback((el) => {
+    previewVideoRef.current = el;
+    if (el && shareRef.current) {
+      el.srcObject = shareRef.current.stream;
+      el.play().catch(() => {});
+    }
+  }, []);
 
   const stopVoiceStream = (notifyServer = true) => {
     const v = voiceRef.current;
@@ -684,6 +767,17 @@ export default function App() {
   };
 
   const toggleRecording = () => (isRecording ? stopVoiceStream() : startVoiceStream());
+
+  // Always visible while sharing (both views): the user must never be unsure whether the agent can see them.
+  const sharingChip = sharing !== 'off' ? (
+    <div className="px-2.5 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-center justify-between gap-3 text-[11px] text-emerald-300 font-mono">
+      <span className="flex items-center gap-2 min-w-0">
+        <video ref={attachPreview} muted playsInline autoPlay className="w-14 h-8 rounded object-cover bg-black shrink-0" />
+        <span className="truncate">Sharing your {sharing} — the agent only looks when you ask about it</span>
+      </span>
+      <button onClick={stopSharing} className="text-[10px] text-emerald-400/80 hover:text-white transition shrink-0">Stop</button>
+    </div>
+  ) : null;
 
   // True when user is on home screen (no messages yet)
   const isHomeScreen = messages.length === 0;
@@ -870,10 +964,25 @@ export default function App() {
                 className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none px-1 py-1 font-sans"
                 autoFocus
               />
+              {sharingChip}
               <div className="flex items-center justify-between pt-1 border-t border-white/5">
                 <div className="flex items-center gap-3 text-slate-400">
                   <button className="hover:text-white transition" title="Upload Image"><ImageIcon className="w-4 h-4" /></button>
                   <button className="hover:text-white transition" title="Code snippet"><Code2 className="w-4 h-4" /></button>
+                  <button
+                    onClick={() => toggleSharing('camera')}
+                    className={`hover:text-white transition ${sharing === 'camera' ? 'text-emerald-400' : ''}`}
+                    title={sharing === 'camera' ? 'Stop sharing camera' : 'Share camera (agent can look when you ask)'}
+                  >
+                    <Camera className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => toggleSharing('screen')}
+                    className={`hover:text-white transition ${sharing === 'screen' ? 'text-emerald-400' : ''}`}
+                    title={sharing === 'screen' ? 'Stop sharing screen' : 'Share screen (agent can look when you ask)'}
+                  >
+                    <ScreenShare className="w-4 h-4" />
+                  </button>
                   <button 
                     onClick={toggleRecording} 
                     className={`hover:text-white transition ${isRecording ? 'text-rose-400 animate-pulse' : ''}`}
@@ -940,6 +1049,8 @@ export default function App() {
               <div className="p-4 shrink-0 max-w-2xl mx-auto w-full">
                 <div className="bg-[#181a20]/95 backdrop-blur-md border border-white/10 rounded-2xl p-3 shadow-2xl flex flex-col gap-2.5 transition focus-within:border-slate-500">
                   
+                  {sharingChip}
+
                   {/* Hands-free voice status */}
                   {isRecording && (
                     <div className="px-2.5 py-1 bg-sky-500/10 border border-sky-500/20 rounded-lg flex items-center justify-between text-[11px] text-sky-300 font-mono">
@@ -976,6 +1087,20 @@ export default function App() {
                     <div className="flex items-center gap-3 text-slate-400">
                       <button className="hover:text-white transition" title="Image"><ImageIcon className="w-4 h-4" /></button>
                       <button className="hover:text-white transition" title="Code"><Code2 className="w-4 h-4" /></button>
+                      <button
+                        onClick={() => toggleSharing('camera')}
+                        className={`hover:text-white transition ${sharing === 'camera' ? 'text-emerald-400' : ''}`}
+                        title={sharing === 'camera' ? 'Stop sharing camera' : 'Share camera (agent can look when you ask)'}
+                      >
+                        <Camera className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => toggleSharing('screen')}
+                        className={`hover:text-white transition ${sharing === 'screen' ? 'text-emerald-400' : ''}`}
+                        title={sharing === 'screen' ? 'Stop sharing screen' : 'Share screen (agent can look when you ask)'}
+                      >
+                        <ScreenShare className="w-4 h-4" />
+                      </button>
                       <button 
                         onClick={toggleRecording} 
                         className={`hover:text-white transition ${isRecording ? 'text-rose-400 animate-pulse' : ''}`}

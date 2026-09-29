@@ -25,6 +25,11 @@ DEFAULT_MAX_HISTORY = 5000
 DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
 
 
+def _redact_bytes(values: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace raw media (audio/video frames) with a size marker: keeps the trace small and JSON-serializable."""
+    return {k: (f"<{len(v)} bytes>" if isinstance(v, (bytes, bytearray)) else v) for k, v in values.items()}
+
+
 class TraceValidationError(Exception):
     """Raised when an emitted action violates trace invariants."""
     pass
@@ -52,7 +57,7 @@ class TraceLogger:
             "session_id": event.session_id,
             "event_id": event.event_id,
             "timestamp": event.timestamp,
-            "payload": event.model_dump(exclude={"payload"}),
+            "payload": _redact_bytes(event.model_dump(exclude={"payload"})),
         }
         self._append_record(record)
         return record

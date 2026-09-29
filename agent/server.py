@@ -12,14 +12,14 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 import base64
 import os
 from agent.coordinator import AgentCoordinator
-from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent
+from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent, VideoFrameEvent
 from agent.schemas.actions import BaseAction
 from agent.trace_logger import TraceLogger
 
@@ -32,14 +32,39 @@ coordinator = AgentCoordinator(
 )
 
 
+# session_id -> the inbox of every live connection for that session. The coordinator has ONE outbound action
+# queue shared by all sessions; a single dispatcher fans each action out to its own session's connections.
+# (Previously every connection ran its own reader on the shared queue and DISCARDED actions for other
+# sessions, so any second connection -- another tab, a stale socket, dev-mode double connect -- randomly
+# stole and dropped actions such as the acknowledgement filler.)
+_subscribers: Dict[str, Set[asyncio.Queue]] = {}
+INBOX_MAX = 2000
+
+
+async def _dispatch_actions_loop() -> None:
+    while True:
+        try:
+            action = await coordinator.get_next_action()
+        except asyncio.CancelledError:
+            break
+        for inbox in list(_subscribers.get(action.session_id, ())):
+            try:
+                inbox.put_nowait(action)
+            except asyncio.QueueFull:
+                logger.warning("Slow client for session %s: dropping action %s", action.session_id, action.action_type)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _subscribers.clear()
+    dispatcher = asyncio.create_task(_dispatch_actions_loop())
     await coordinator.start()
     # Load + warm the Whisper model in the background so the first voice message doesn't
     # pay the cold-start cost, without delaying server startup (/health reports progress).
     asr_warmup_task = asyncio.create_task(asyncio.to_thread(coordinator.asr_processor.warmup))
     yield
     asr_warmup_task.cancel()
+    dispatcher.cancel()
     await coordinator.stop()
 
 
@@ -60,17 +85,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
     session = coordinator.get_or_create_session(session_id)
 
-    # Task to forward action queue to WebSocket
+    inbox: asyncio.Queue = asyncio.Queue(maxsize=INBOX_MAX)
+    _subscribers.setdefault(session_id, set()).add(inbox)
+
+    # Task to forward THIS session's actions to the WebSocket
     async def forward_actions():
         while True:
             try:
-                action = await coordinator.get_next_action()
-                if action.session_id == session_id:
-                    await websocket.send_text(action.model_dump_json())
+                action = await inbox.get()
+                await websocket.send_text(action.model_dump_json())
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("Error forwarding action: %s", e)
+                logger.info("Stopping forwarder for session %s: %s", session_id, e)
+                break  # the socket is gone; nothing more can be delivered to it
 
     forwarder_task = asyncio.create_task(forward_actions())
 
@@ -126,6 +154,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                 format="pcm_16khz",
                             )
                         )
+                elif event_type == "video_frame":
+                    # {"type":"video_frame","mime":"image/jpeg","data":"<base64>","source":"camera|screen"}
+                    b64 = data.get("data") or ""
+                    if len(b64) <= 3_000_000:  # ~2 MB decoded; the coordinator re-validates size and mime
+                        try:
+                            frame = base64.b64decode(b64, validate=True)
+                        except Exception:
+                            frame = b""
+                        if frame:
+                            await coordinator.post_event(
+                                VideoFrameEvent(
+                                    session_id=session_id,
+                                    frame_data=frame,
+                                    mime=data.get("mime", "image/jpeg"),
+                                    source=data.get("source", "camera"),
+                                    width=int(data.get("width", 0) or 0),
+                                    height=int(data.get("height", 0) or 0),
+                                )
+                            )
                 elif event_type == "audio_chunk":
                     b64_audio = data.get("audio_base64", "")
                     raw_audio = base64.b64decode(b64_audio) if b64_audio else None
@@ -153,6 +200,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 AudioChunkEvent(session_id=session_id, streaming=True, stream_control="stop", format="pcm_16khz")
             )
         forwarder_task.cancel()
+        subscribers = _subscribers.get(session_id)
+        if subscribers is not None:
+            subscribers.discard(inbox)
+            if not subscribers:
+                del _subscribers[session_id]
 
 
 DEMO_HTML = """
