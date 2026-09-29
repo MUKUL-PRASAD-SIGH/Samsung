@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 import json
 import os
 import logging
+import time
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -68,6 +69,9 @@ class LLMConfig(BaseModel):
         )
     )
     max_consecutive_timeouts: int = 3
+    circuit_cooldown_s: float = Field(
+        default_factory=lambda: float(os.getenv("LLM_CIRCUIT_COOLDOWN_S", "15.0"))
+    )
     temperature: float = 0.1
 
 
@@ -373,26 +377,58 @@ class LocalQwenBackend(LLMBackend):
 
 
 class CircuitBreakerLLMClient:
-    """Wraps an LLMBackend with hard deadlines, timeout tracking, and graceful fallback (§7.1)."""
+    """Wraps an LLMBackend with hard deadlines, failure tracking, and graceful fallback (§7.1).
+
+    States: CLOSED (normal) -> OPEN after `max_consecutive_timeouts` consecutive failures
+    (timeouts or backend errors like HTTP 429 / network errors) -> HALF-OPEN once
+    `circuit_cooldown_s` has elapsed, letting a single probe request through. A successful
+    probe closes the circuit; a failed one re-opens it for another cooldown. Without the
+    half-open step, one bad minute at the provider would degrade every request until restart.
+    """
 
     def __init__(self, backend: LLMBackend, config: LLMConfig):
         self.backend = backend
         self.config = config
         self.consecutive_timeouts = 0
         self.is_circuit_open = False
+        self._opened_at: Optional[float] = None
+        self._probe_in_flight = False
+
+    def _cooldown_elapsed(self) -> bool:
+        return self._opened_at is not None and (time.monotonic() - self._opened_at) >= self.config.circuit_cooldown_s
+
+    def _record_failure(self) -> None:
+        self.consecutive_timeouts += 1
+        if self.is_circuit_open or self.consecutive_timeouts >= self.config.max_consecutive_timeouts:
+            # (Re)open and restart the cooldown clock -- also covers a failed half-open probe.
+            self.is_circuit_open = True
+            self._opened_at = time.monotonic()
+
+    def _record_success(self) -> None:
+        if self.is_circuit_open:
+            logger.info("Circuit breaker probe succeeded. Closing circuit.")
+        self.consecutive_timeouts = 0
+        self.is_circuit_open = False
+        self._opened_at = None
 
     async def generate(
         self,
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> LLMResponse:
-        # If circuit is open, return immediate fallback clarification
+        is_probe = False
         if self.is_circuit_open:
-            logger.warning("Circuit breaker is OPEN. Returning fallback response.")
-            return LLMResponse(
-                response_type="clarification",
-                content="I'm still processing your request, please give me a moment.",
-            )
+            if self._cooldown_elapsed() and not self._probe_in_flight:
+                # Half-open: exactly one caller probes the backend; everyone else keeps the fallback.
+                is_probe = True
+                self._probe_in_flight = True
+                logger.info("Circuit breaker HALF-OPEN. Probing LLM backend.")
+            else:
+                logger.warning("Circuit breaker is OPEN. Returning fallback response.")
+                return LLMResponse(
+                    response_type="clarification",
+                    content="I'm still processing your request, please give me a moment.",
+                )
 
         try:
             # Enforce hard deadline
@@ -400,24 +436,35 @@ class CircuitBreakerLLMClient:
                 self.backend.generate(messages, tools),
                 timeout=self.config.timeout_s,
             )
-            self.consecutive_timeouts = 0
+            self._record_success()
             return response
 
         except (asyncio.TimeoutError, TimeoutError):
-            self.consecutive_timeouts += 1
+            self._record_failure()
             logger.warning(
-                "LLM call exceeded timeout deadline (%.2fs). Consecutive timeouts: %d",
+                "LLM call exceeded timeout deadline (%.2fs). Consecutive failures: %d",
                 self.config.timeout_s,
                 self.consecutive_timeouts,
             )
-            if self.consecutive_timeouts >= self.config.max_consecutive_timeouts:
-                self.is_circuit_open = True
-
             # Graceful fallback: clarification instead of blowing latency score (§7.1)
             return LLMResponse(
                 response_type="clarification",
                 content="Still pulling that data together, one second...",
             )
+
+        except Exception as e:
+            # Provider errors (HTTP 429/5xx, network drops, malformed JSON) used to escape as
+            # raw exceptions and the user got no reply at all. Treat them as breaker failures.
+            self._record_failure()
+            logger.error("LLM backend error (%s: %s). Consecutive failures: %d", type(e).__name__, e, self.consecutive_timeouts)
+            return LLMResponse(
+                response_type="clarification",
+                content="I hit a snag reaching my reasoning engine — could you try that again?",
+            )
+
+        finally:
+            if is_probe:
+                self._probe_in_flight = False
 
 
 def get_backend(config: LLMConfig) -> LLMBackend:
