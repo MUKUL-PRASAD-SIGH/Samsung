@@ -37,6 +37,7 @@ from agent.schemas.actions import (
 from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
 from agent.trace_logger import TraceLogger
+from agent.tool_summaries import summarize_tool_result, summarize_tool_error
 from agent.fast_path.templates import generate_filler
 from agent.fast_path.intent_classifier import IntentClassifier
 from agent.slow_path.planner import Planner
@@ -467,10 +468,14 @@ class AgentCoordinator:
             )
             return
 
-        # If an autonomous agent generated an artifact, emit an agent announcement
-        agent_response_text = ""
+        # Every completed call gets a visible reply: a failure notice, an artifact
+        # announcement (agent workers), or a summary of the tool's result. Previously only
+        # artifact-producing workers replied, leaving plain tool calls (flights, weather...)
+        # stuck on the "Looking that up..." filler with no confirmation.
         artifacts: List[Dict[str, Any]] = []
-        if event.result and isinstance(event.result, dict) and "artifact" in event.result:
+        if event.error:
+            agent_response_text = summarize_tool_error(event.tool_name, event.error)
+        elif event.result and isinstance(event.result, dict) and "artifact" in event.result:
             art = event.result["artifact"]
             agent_name = event.result.get("agent_name", "Worker")
             agent_response_text = (
@@ -478,12 +483,16 @@ class AgentCoordinator:
                 "The artifact is ready in your workspace."
             )
             artifacts = [art]
-            spoken = SpokenResponseAction(
+        else:
+            agent_response_text = summarize_tool_result(event.tool_name, event.result)
+
+        await self.emit_action(
+            SpokenResponseAction(
                 session_id=session.session_id,
                 epoch=session.epoch,
                 text=agent_response_text,
             )
-            await self.emit_action(spoken)
+        )
 
         # Emit snapshot with updated completed state
         await self.emit_action(session.get_snapshot())
