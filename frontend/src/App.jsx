@@ -973,7 +973,7 @@ export default function App() {
                 </div>
 
                 {/* BOTTOM HALF: Agent Activity Panel */}
-                <div className="h-64 flex flex-col bg-[#111319]/90 border-t border-white/10 shrink-0">
+                <div className={`${activeRightTab === 'graph' ? 'h-[60%]' : 'h-64'} flex flex-col bg-[#111319]/90 border-t border-white/10 shrink-0 transition-[height] duration-200`}>
                   {/* Section Header */}
                   <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between bg-black/30">
                     <div className="flex items-center gap-2">
