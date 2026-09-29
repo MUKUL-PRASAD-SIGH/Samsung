@@ -65,11 +65,15 @@ class LLMConfig(BaseModel):
         default_factory=lambda: float(
             os.getenv(
                 "LLM_TIMEOUT_S",
-                "4.0" if os.getenv("GROQ_API_KEY") else ("5.0" if os.getenv("OPENROUTER_API_KEY") else "2.0"),
+                "8.0" if os.getenv("GROQ_API_KEY") else ("5.0" if os.getenv("OPENROUTER_API_KEY") else "2.0"),
             )
         )
     )
     max_consecutive_timeouts: int = 3
+    # On HTTP 429, wait and retry once if the provider says to retry within this many seconds.
+    rate_limit_max_wait_s: float = Field(
+        default_factory=lambda: float(os.getenv("LLM_RATE_LIMIT_MAX_WAIT_S", "3.0"))
+    )
     circuit_cooldown_s: float = Field(
         default_factory=lambda: float(os.getenv("LLM_CIRCUIT_COOLDOWN_S", "15.0"))
     )
@@ -127,6 +131,51 @@ def _extract_memory_update(content: Optional[str]) -> tuple[Optional[str], Optio
     if after.strip():
         cleaned = f"{cleaned}\n\n{after.strip()}".strip()
     return cleaned, memory_update
+
+
+class RateLimitError(RuntimeError):
+    """HTTP 429 from the provider, carrying the server's suggested wait (seconds) when given."""
+
+    def __init__(self, message: str, retry_after_s: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
+
+
+_DURATION_TOKEN = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h)")
+_UNIT_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def _parse_retry_after(header_value: Optional[str], body_text: str) -> Optional[float]:
+    """Seconds to wait before retrying, from a Retry-After header or the provider's message
+    (Groq: "Please try again in 1.905s" / "in 250ms" / "in 1m5.2s")."""
+    if header_value:
+        try:
+            return max(0.0, float(header_value))
+        except ValueError:
+            pass
+    match = re.search(r"try again in\s+((?:\d+(?:\.\d+)?(?:ms|s|m|h))+)", body_text)
+    if match:
+        return sum(float(n) * _UNIT_SECONDS[u] for n, u in _DURATION_TOKEN.findall(match.group(1)))
+    return None
+
+
+async def _request_with_rate_limit_retry(config: "LLMConfig", do_request, provider: str) -> Dict[str, Any]:
+    """Run the blocking request in a thread; on a short-hint 429, wait and retry exactly once.
+
+    Free-tier token-per-minute limits produce frequent 429s that clear within ~2s, so one retry
+    turns most of them into a slightly slower success instead of a failed turn. Long or unknown
+    waits are re-raised so the circuit breaker can degrade gracefully instead of stalling the user.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, do_request)
+    except RateLimitError as e:
+        wait = e.retry_after_s
+        if wait is None or wait > config.rate_limit_max_wait_s:
+            raise
+        logger.warning("%s rate limited; retrying once in %.2fs", provider, wait)
+        await asyncio.sleep(wait + 0.1)
+        return await loop.run_in_executor(None, do_request)
 
 
 class LLMBackend(ABC):
@@ -238,13 +287,17 @@ class OpenRouterBackend(LLMBackend):
             except urllib.error.HTTPError as e:
                 err_text = e.read().decode("utf-8", errors="replace")
                 logger.error("OpenRouter HTTP %d error: %s", e.code, err_text)
+                if e.code == 429:
+                    raise RateLimitError(
+                        f"OpenRouter HTTP 429: {err_text}",
+                        _parse_retry_after(e.headers.get("Retry-After") if e.headers else None, err_text),
+                    ) from e
                 raise RuntimeError(f"OpenRouter HTTP {e.code}: {err_text}") from e
             except urllib.error.URLError as e:
                 logger.error("OpenRouter network error: %s", e)
                 raise
 
-        loop = asyncio.get_running_loop()
-        res_json = await loop.run_in_executor(None, _do_request)
+        res_json = await _request_with_rate_limit_retry(self.config, _do_request, "OpenRouter")
         
         choice = res_json["choices"][0]["message"]
         if "tool_calls" in choice and choice["tool_calls"]:
@@ -316,13 +369,17 @@ class GroqBackend(LLMBackend):
             except urllib.error.HTTPError as e:
                 err_text = e.read().decode("utf-8", errors="replace")
                 logger.error("Groq HTTP %d error: %s", e.code, err_text)
+                if e.code == 429:
+                    raise RateLimitError(
+                        f"Groq HTTP 429: {err_text}",
+                        _parse_retry_after(e.headers.get("Retry-After") if e.headers else None, err_text),
+                    ) from e
                 raise RuntimeError(f"Groq HTTP {e.code}: {err_text}") from e
             except urllib.error.URLError as e:
                 logger.error("Groq network error: %s", e)
                 raise
 
-        loop = asyncio.get_running_loop()
-        res_json = await loop.run_in_executor(None, _do_request)
+        res_json = await _request_with_rate_limit_retry(self.config, _do_request, "Groq")
 
         choice = res_json["choices"][0]["message"]
         if "tool_calls" in choice and choice["tool_calls"]:
