@@ -23,6 +23,7 @@ from agent.schemas.actions import (
     InFlightCallInfo,
 )
 from agent.coordination.idempotency import IdempotencyStore
+from agent.memory.tool_slots import MISSING
 
 if TYPE_CHECKING:
     from agent.memory.scratchpad import TurnScratchpad
@@ -62,6 +63,9 @@ class SessionState:
         # cycle; stays None for sessions that never opt in (e.g. bare
         # SessionState() instances constructed directly by tests), so all
         # existing behavior below is completely unaffected.
+        # call_id -> {slot: (value before the call, value the call set)}; lets an aborted call's
+        # slot changes be undone so abandoned values never survive in the snapshot.
+        self._call_slot_undo: Dict[str, Dict[str, Any]] = {}
         self.scratchpad: Optional["TurnScratchpad"] = None
         self.graph_memory: Optional["GraphMemory"] = None
 
@@ -107,6 +111,34 @@ class SessionState:
         self.slots.update(slot_diff)
         self._save_to_history()
 
+    def stage_call_slots(self, call_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Patch slots with a tool call's arguments at DISPATCH time (§2.3: the snapshot shows slots
+        while the call is still in flight). Returns each slot's previous value (MISSING if none).
+
+        The undo record lets `revert_call_slots` restore them if the call is aborted, so a value the
+        user abandoned ("Mumbai" before "actually, Goa") can't linger in the snapshot.
+        """
+        previous = {k: self.slots.get(k, MISSING) for k in values}
+        self._call_slot_undo[call_id] = {k: (previous[k], v) for k, v in values.items()}
+        self.patch_slots(values)
+        return previous
+
+    def revert_call_slots(self, call_id: str) -> None:
+        """Undo a call's slot changes -- only where the slot still holds the value that call set."""
+        undo = self._call_slot_undo.pop(call_id, None)
+        if not undo:
+            return
+        changed = False
+        for key, (previous, set_value) in undo.items():
+            if key in self.slots and self.slots[key] == set_value:
+                if previous is MISSING:
+                    del self.slots[key]
+                else:
+                    self.slots[key] = previous
+                changed = True
+        if changed:
+            self._save_to_history()
+
     def bump_epoch(self, reason: str = "user_interrupt") -> List[ToolCancelAction]:
         """Increment epoch and immediately cancel all stale in-flight calls (§2.1).
         
@@ -122,6 +154,7 @@ class SessionState:
                 if call.asyncio_task and not call.asyncio_task.done():
                     call.asyncio_task.cancel()
                 call.status = "cancelled"
+                self.revert_call_slots(call.call_id)
                 cancellations.append(
                     ToolCancelAction(
                         session_id=self.session_id,
@@ -132,7 +165,7 @@ class SessionState:
                     )
                 )
                 if self.scratchpad is not None:
-                    self.scratchpad.mark_aborted(call.call_id, call.tool_name, reason)
+                    self.scratchpad.mark_aborted(call.call_id, call.tool_name, reason, call.arguments)
 
         return cancellations
 
@@ -205,6 +238,7 @@ class SessionState:
             return False
 
         call.status = "completed"
+        self._call_slot_undo.pop(call_id, None)  # the call finished: its slot values are now permanent
         if call.idempotency_key:
             self.idempotency_store.complete(call.idempotency_key, result=result)
         return True

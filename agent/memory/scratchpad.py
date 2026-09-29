@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.memory.tool_slots import UNTRACKED
+
 if TYPE_CHECKING:
     from agent.coordination.state_machine import SessionState
 
@@ -42,6 +44,8 @@ class EntityCandidate:
     value: Any
     epoch: int
     source_call_id: Optional[str] = None  # set for entities derived from a tool call's arguments
+    # Slot value this entity replaced (MISSING if none). UNTRACKED when the slot is only patched at commit.
+    previous_value: Any = UNTRACKED
 
 
 @dataclass
@@ -91,7 +95,7 @@ class TurnScratchpad:
         )
 
     def record_entity_candidate(
-        self, entity_type: str, key: str, value: Any, call_id: Optional[str] = None
+        self, entity_type: str, key: str, value: Any, call_id: Optional[str] = None, previous_value: Any = UNTRACKED
     ) -> None:
         self.entity_candidates.append(
             EntityCandidate(
@@ -100,13 +104,14 @@ class TurnScratchpad:
                 value=value,
                 epoch=self._session.epoch,
                 source_call_id=call_id,
+                previous_value=previous_value,
             )
         )
 
     def record_intent_shift(self, new_intent: str) -> None:
         self.intent_shift = new_intent
 
-    def mark_aborted(self, call_id: str, tool_name: str, reason: str) -> None:
+    def mark_aborted(self, call_id: str, tool_name: str, reason: str, arguments: Optional[Dict[str, Any]] = None) -> None:
         """Called when session.bump_epoch() cancels an in-flight call belonging to this turn.
 
         Entities that came from the aborted call's arguments are discarded: the user abandoned
@@ -117,7 +122,7 @@ class TurnScratchpad:
             InFlightCallRecord(
                 call_id=call_id,
                 tool_name=tool_name,
-                arguments={},
+                arguments=dict(arguments or {}),
                 status="cancelled",
                 epoch=self._session.epoch,
             )
@@ -140,11 +145,19 @@ class TurnScratchpad:
         for cand in self.entity_candidates:
             final_diff[cand.key] = cand.value
 
-        overrides = {
-            key: self._session.slots[key]
-            for key, new_value in final_diff.items()
-            if key in self._session.slots and self._session.slots[key] != new_value
-        }
+        # A slot counts as overridden if this turn replaced a different earlier value. Tool-call
+        # entities were already patched at dispatch, so they carry the value they replaced.
+        from agent.memory.tool_slots import MISSING
+
+        overrides: Dict[str, Any] = {}
+        tracked = {c.key: c for c in self.entity_candidates if c.previous_value is not UNTRACKED}
+        for key, new_value in final_diff.items():
+            if key in tracked:
+                prev = tracked[key].previous_value
+                if prev is not MISSING and prev != new_value:
+                    overrides[key] = prev
+            elif key in self._session.slots and self._session.slots[key] != new_value:
+                overrides[key] = self._session.slots[key]
 
         if final_diff or self.intent_shift:
             self._session.patch_slots(final_diff, new_intent=self.intent_shift)

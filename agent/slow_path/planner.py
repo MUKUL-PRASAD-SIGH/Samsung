@@ -22,7 +22,7 @@ from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
 from agent.llm_client import LLMBackend, CircuitBreakerLLMClient, LLMConfig
 from agent.memory.context_builder import build_context_block, build_history_messages
-from agent.memory.tool_slots import entities_from_tool_call
+from agent.memory.tool_slots import MISSING, entities_from_tool_call
 
 logger = logging.getLogger("agent.planner")
 
@@ -42,8 +42,14 @@ class Planner:
         self,
         event: UserTextEvent,
         session: SessionState,
+        plan_epoch: Optional[int] = None,
     ) -> List[BaseAction]:
-        """Generate reasoned actions (tool calls, responses, or clarifications) for user input."""
+        """Generate reasoned actions (tool calls, responses, or clarifications) for user input.
+
+        `plan_epoch` is the epoch the plan started under. If the session's epoch has moved on by the
+        time the LLM answers, the user interrupted mid-thought: the plan is stale, so return no actions
+        rather than registering and dispatching work the user has already abandoned (§2.1).
+        """
         actions: List[BaseAction] = []
 
         # Prepare messages context. build_context_block/build_history_messages are the
@@ -56,6 +62,8 @@ class Planner:
                 "content": (
                     "You are a helpful, precise real-time assistant and autonomous agent architect. "
                     "When the user requests an action, call the appropriate tool. "
+                    "If they explicitly ask to book, reserve or cancel something and have given the details, "
+                    "call that booking tool directly -- do not search first. "
                     "You have the superpower to synthesize custom, bespoke agents on the fly! "
                     "When the user asks to build, design, audit, analyze, or execute any specialized task (e.g. database schema, SVG graphics, security audit, code, travel), "
                     "call 'spawn_agent' and create a tailored agent with a unique name (e.g. 'db_architect', 'vector_craft', 'sec_auditor', 'bob'), "
@@ -76,6 +84,11 @@ class Planner:
 
         # Generate LLM response through circuit-breaker-wrapped client
         llm_resp = await self.client.generate(messages, tools=tools)
+
+        if plan_epoch is not None and session.epoch != plan_epoch:
+            logger.info("Discarding stale plan for %r: epoch %d -> %d while the LLM was thinking",
+                        event.text, plan_epoch, session.epoch)
+            return []
 
         if llm_resp.memory_update and session.scratchpad is not None:
             for ent in llm_resp.memory_update.get("entities", []) or []:
@@ -100,7 +113,13 @@ class Planner:
 
             is_modifying = self.tool_router.is_state_modifying(tool_name)
 
-            # Register call in session state
+            # Apply the call's arguments to the slots first (§2.3: corrections patch the snapshot, which
+            # shows slots while the call is in flight). This must precede registration: the idempotency
+            # key hashes the slot values (§2.2), so two identical requests then get the same key while
+            # two different ones don't.
+            entities = entities_from_tool_call(tool_name, arguments)
+            previous = session.stage_call_slots(call_id, {k: v for _, k, v in entities}) if entities else {}
+
             tool_action = session.register_tool_call(
                 call_id=call_id,
                 tool_name=tool_name,
@@ -108,14 +127,15 @@ class Planner:
                 is_state_modifying=is_modifying,
             )
 
-            if tool_action is not None:
+            if tool_action is None:
+                session.revert_call_slots(call_id)  # duplicate request: nothing was dispatched
+            else:
                 actions.append(tool_action)
-                # The arguments the model chose are the resolved parameters for this turn; record
-                # them as call-scoped entities (dropped if this call is later aborted by a
-                # correction) so slots/graph reflect tool turns, which never carry MEMORY_UPDATE.
                 if session.scratchpad is not None:
-                    for entity_type, key, value in entities_from_tool_call(tool_name, arguments):
-                        session.scratchpad.record_entity_candidate(entity_type, key, value, call_id=call_id)
+                    for entity_type, key, value in entities:
+                        session.scratchpad.record_entity_candidate(
+                            entity_type, key, value, call_id=call_id, previous_value=previous.get(key, MISSING)
+                        )
 
         elif llm_resp.response_type == "clarification":
             actions.append(

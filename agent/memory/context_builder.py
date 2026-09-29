@@ -16,9 +16,42 @@ if TYPE_CHECKING:
     from agent.coordination.state_machine import SessionState
 
 
+def build_interrupted_work_note(session: "SessionState") -> str:
+    """Tell the LLM what the user's newest message may be correcting.
+
+    A request that was interrupted before finishing is never committed to history (it produced no
+    completed turn) and its slot changes are rolled back, so without this the model sees "Actually make
+    it Goa" with nothing to correct and asks the user to repeat themselves. The scratchpad still holds
+    the uncommitted utterances and the cancelled calls' arguments; surface them.
+    """
+    scratchpad = getattr(session, "scratchpad", None)
+    if scratchpad is None:
+        return ""
+    earlier = [c.strip() for c in scratchpad.raw_chunks[:-1] if c.strip()]  # last chunk = the newest message
+    cancelled = [c for c in scratchpad.aborted_calls if c.arguments]
+    if not earlier and not cancelled:
+        return ""
+
+    parts = []
+    if earlier:
+        parts.append("Earlier requests in this exchange that did not finish: " + "; ".join(f'"{c}"' for c in earlier[-3:]) + ".")
+    if cancelled:
+        described = "; ".join(
+            f"{c.tool_name}({', '.join(f'{k}={v}' for k, v in c.arguments.items())})" for c in cancelled[-3:]
+        )
+        parts.append(f"Tool calls cancelled by the user's newest message: {described}.")
+    parts.append(
+        "If the newest message corrects or adjusts that work, apply the correction and re-issue the tool call "
+        "with the updated arguments instead of asking the user to repeat or confirm."
+    )
+    return " ".join(parts)
+
+
 def build_context_block(session: "SessionState") -> str:
-    """Returns the system-prompt fragment describing current intent/slots."""
-    return f"Current session intent: {session.intent or 'unknown'}. Current slots: {session.slots}."
+    """Returns the system-prompt fragment describing current intent/slots (and interrupted work)."""
+    block = f"Current session intent: {session.intent or 'unknown'}. Current slots: {session.slots}."
+    note = build_interrupted_work_note(session)
+    return f"{block} {note}" if note else block
 
 
 def build_history_messages(session: "SessionState", max_turns: int = 5) -> List[Dict[str, str]]:

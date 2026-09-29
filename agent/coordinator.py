@@ -96,6 +96,8 @@ class AgentCoordinator:
         self._pending_events: Dict[str, List[UserTextEvent]] = {}
         self._audio_buffers: Dict[str, bytearray] = {}
         self._voice: Dict[str, _VoiceRuntime] = {}
+        self._turn_tasks: Set[asyncio.Task] = set()  # in-progress planning turns (debounced text)
+        self._active_plans: Dict[str, int] = {}      # session_id -> planner calls currently awaiting the LLM
         self._running = False
         self._loop_task: Optional[asyncio.Task] = None
 
@@ -133,6 +135,8 @@ class AgentCoordinator:
         for session in self.sessions.values():
             session.bump_epoch(reason="system_shutdown")
 
+        for task in list(self._turn_tasks):
+            task.cancel()
         for runtime in self._voice.values():
             for task in list(runtime.tasks):
                 task.cancel()
@@ -427,22 +431,47 @@ class AgentCoordinator:
         async def _flush_after_delay():
             try:
                 await asyncio.sleep(self.debounce_window_s)
-                events = self._pending_events.pop(sid, [])
-                if not events:
-                    return
-                # The latest event in the rapid burst represents the final intent
-                final_event = events[-1]
-                await self._handle_user_text(session, final_event)
             except asyncio.CancelledError:
-                pass
+                return  # a newer event arrived inside the window: it will flush the coalesced burst
+            events = self._pending_events.pop(sid, [])
+            if not events:
+                return
+            # The latest event in the rapid burst represents the final intent. Planning (an LLM call)
+            # runs in its OWN task: cancelling the debounce timer for a newer message must never kill a
+            # plan that is already in progress -- that silently lost the earlier request. Whether that
+            # plan is still wanted is decided by the epoch check in the planner, not by task cancellation.
+            self._spawn_turn(self._handle_user_text(session, events[-1]))
 
         self._debounce_tasks[sid] = asyncio.create_task(_flush_after_delay())
+
+    def _spawn_turn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._turn_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._turn_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.error("Turn handling failed", exc_info=t.exception())
+
+        task.add_done_callback(_done)
+        return task
 
     async def _handle_interrupt(self, session: SessionState, reason: str = "interrupt") -> None:
         """Handle interrupt signal: bump epoch, emit cancellations and updated snapshot."""
         cancellations = session.bump_epoch(reason=reason)
         for cancel_action in cancellations:
             await self.emit_action(cancel_action)
+
+        # Acknowledge out loud when something was actually stopped (a bare interrupt has no follow-up
+        # text, so without this the user gets silence after "stop").
+        if cancellations or self._active_plans.get(session.session_id, 0) > 0:
+            await self.emit_action(
+                FillerAction(
+                    session_id=session.session_id,
+                    epoch=session.epoch,
+                    text=generate_filler(intent=session.intent, slots=session.slots, is_interruption=True),
+                )
+            )
 
         # Emit updated snapshot showing cancelled calls
         await self.emit_action(session.get_snapshot())
@@ -479,7 +508,16 @@ class AgentCoordinator:
         )
 
         # Tier 3 Slow-Path Planning (§3, §4)
-        actions = await self.planner.plan(event, session)
+        # Tag this plan with the epoch it starts under (§2.1). If an interrupt bumps the epoch while the
+        # LLM is still thinking, the planner returns [] instead of dispatching an already-stale plan.
+        sid = session.session_id
+        self._active_plans[sid] = self._active_plans.get(sid, 0) + 1
+        try:
+            actions = await self.planner.plan(event, session, plan_epoch=session.epoch)
+        finally:
+            self._active_plans[sid] -= 1
+        if not actions:
+            return  # superseded by a newer interrupt: nothing to emit, and no turn to commit
         turn_has_tool_call = False
         agent_response_text = ""
         for action in actions:

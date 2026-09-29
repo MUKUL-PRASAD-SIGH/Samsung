@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+MISSING = object()    # "this slot had no value before"
+UNTRACKED = object()  # "previous value was not recorded for this entity"
+
 # spawn_agent arguments describe the worker (persona, plan, artifact spec), not user facts.
 SKIP_TOOLS = {"spawn_agent"}
 
