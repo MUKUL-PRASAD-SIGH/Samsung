@@ -60,3 +60,24 @@ def test_trace_logger_catches_unknown_call_cancel():
                 reason="interrupt",
             )
         )
+
+
+def test_trace_logger_rejects_malformed_schema_in_strict_mode():
+    """A record missing a required field (empty session_id) must fail schema validation, not just invariants."""
+    tracer = TraceLogger(strict=True)
+    with pytest.raises(TraceValidationError, match="schema validation"):
+        tracer.log_action(FillerAction(session_id="", epoch=1, text="no session id"))
+
+
+def test_trace_logger_drops_and_counts_malformed_records_in_non_strict_mode():
+    """§7.6: eval/prod mode drops a bad record and counts it instead of taking the session down."""
+    tracer = TraceLogger(strict=False)
+    result = tracer.log_action(FillerAction(session_id="", epoch=1, text="no session id"))
+    assert result is None
+    assert tracer.dropped_count == 1
+    assert len(tracer.trace_history) == 0
+
+    # A valid record right after still logs normally.
+    tracer.log_action(FillerAction(session_id="sess_ok", epoch=1, text="fine"))
+    assert len(tracer.trace_history) == 1
+    assert tracer.dropped_count == 1

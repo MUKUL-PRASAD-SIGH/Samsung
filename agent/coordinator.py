@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections import deque
@@ -62,6 +63,12 @@ logger = logging.getLogger("agent.coordinator")
 
 FRAMES_PER_SESSION = 3      # ring buffer: only the newest frames matter, and nothing is analyzed until asked
 MAX_FRAME_AGE_S = 15.0      # a frame older than this means sharing stopped: don't answer from a stale image
+
+# Resource bounds (gap #8): sessions are in-memory only and were never evicted, so a long-running
+# server accumulated one SessionState (plus its idempotency store and memory graph) per page load
+# forever. <= 0 disables eviction, e.g. for tests that assert on session count across time.
+SESSION_TTL_S = float(os.getenv("SESSION_TTL_S", "3600"))
+SESSION_EVICT_INTERVAL_S = float(os.getenv("SESSION_EVICT_INTERVAL_S", "300"))
 
 
 @dataclass
@@ -121,6 +128,7 @@ class AgentCoordinator:
         self._active_plans: Dict[str, int] = {}      # session_id -> planner calls currently awaiting the LLM
         self._running = False
         self._loop_task: Optional[asyncio.Task] = None
+        self._evict_task: Optional[asyncio.Task] = None
 
     def get_or_create_session(self, session_id: str) -> SessionState:
         """Retrieve existing session or instantiate a new SessionState."""
@@ -130,12 +138,47 @@ class AgentCoordinator:
             self.sessions[session_id] = session
         return self.sessions[session_id]
 
+    def evict_idle_sessions(self, now: Optional[float] = None) -> List[str]:
+        """Drop sessions idle longer than SESSION_TTL_S, freeing their idempotency store and
+        memory graph (gap #8). A session with in-flight work is never evicted, however idle its
+        last *event* looked, so a slow tool call can't have its own session vanish underneath it.
+        """
+        if SESSION_TTL_S <= 0:
+            return []
+        now = now if now is not None else time.time()
+        stale = [
+            sid for sid, session in self.sessions.items()
+            if (now - session.last_activity) > SESSION_TTL_S
+            and not any(c.status in ("pending", "running") for c in session.in_flight_calls.values())
+        ]
+        for sid in stale:
+            del self.sessions[sid]
+            self._pending_events.pop(sid, None)
+            self._audio_buffers.pop(sid, None)
+            self._frames.pop(sid, None)
+            self._voice.pop(sid, None)
+            self._active_plans.pop(sid, None)
+        if stale:
+            logger.info("Evicted %d idle session(s): %s", len(stale), stale)
+        return stale
+
+    async def _evict_idle_sessions_loop(self) -> None:
+        while self._running:
+            try:
+                await asyncio.sleep(SESSION_EVICT_INTERVAL_S)
+                self.evict_idle_sessions()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Session eviction pass failed")
+
     async def start(self) -> None:
         """Start the background event processing loop."""
         if self._running:
             return
         self._running = True
         self._loop_task = asyncio.create_task(self._process_events())
+        self._evict_task = asyncio.create_task(self._evict_idle_sessions_loop())
 
     async def stop(self) -> None:
         """Stop processing and cancel remaining tasks."""
@@ -144,6 +187,12 @@ class AgentCoordinator:
             self._loop_task.cancel()
             try:
                 await self._loop_task
+            except asyncio.CancelledError:
+                pass
+        if self._evict_task and not self._evict_task.done():
+            self._evict_task.cancel()
+            try:
+                await self._evict_task
             except asyncio.CancelledError:
                 pass
 
@@ -167,6 +216,8 @@ class AgentCoordinator:
     async def post_event(self, event: BaseEvent) -> None:
         """Inbound interface: Put an event onto the Event Queue."""
         self.trace_logger.log_event(event)
+        if event.session_id in self.sessions:
+            self.sessions[event.session_id].touch()
         await self.event_queue.put(event)
 
     async def emit_action(self, action: BaseAction) -> None:

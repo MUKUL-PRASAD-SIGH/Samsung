@@ -20,7 +20,7 @@ from agent.schemas.actions import (
 )
 from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
-from agent.llm_client import LLMBackend, CircuitBreakerLLMClient, LLMConfig
+from agent.llm_client import LLMBackend, CircuitBreakerLLMClient, LLMConfig, get_fallback_backend
 from agent.memory.context_builder import build_context_block, build_history_messages
 from agent.memory.tool_slots import MISSING, entities_from_tool_call
 
@@ -35,7 +35,7 @@ class Planner:
         config: Optional[LLMConfig] = None,
     ):
         self.config = config or LLMConfig()
-        self.client = CircuitBreakerLLMClient(llm_backend, self.config)
+        self.client = CircuitBreakerLLMClient(llm_backend, self.config, fallback_backend=get_fallback_backend())
         self.tool_router = tool_router
 
     async def plan(
