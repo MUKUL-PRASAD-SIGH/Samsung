@@ -12,11 +12,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from collections import deque
 from typing import Any, Dict, List, Optional
 from agent.schemas.actions import BaseAction, ToolCallAction, ToolCancelAction, StateSnapshotAction
 from agent.schemas.events import BaseEvent
 
 logger = logging.getLogger("agent.trace")
+
+DEFAULT_MAX_HISTORY = 5000
+# Roll the trace file over once it exceeds this size, keeping one prior file (`.1`).
+DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
 
 
 class TraceValidationError(Exception):
@@ -25,9 +31,15 @@ class TraceValidationError(Exception):
 
 
 class TraceLogger:
-    def __init__(self, log_file: Optional[str] = None):
+    def __init__(
+        self,
+        log_file: Optional[str] = None,
+        max_history: int = DEFAULT_MAX_HISTORY,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    ):
         self.log_file = log_file
-        self.trace_history: List[Dict[str, Any]] = []
+        self.max_file_bytes = max_file_bytes
+        self.trace_history: deque = deque(maxlen=max_history)
         # Per-session tracked state for invariant checking
         self._session_epochs: Dict[str, int] = {}
         self._registered_call_ids: Dict[str, set] = {}
@@ -94,5 +106,19 @@ class TraceLogger:
         """Append record to memory and optional JSON-lines file."""
         self.trace_history.append(record)
         if self.log_file:
+            self._rotate_if_needed()
             with open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")
+
+    def _rotate_if_needed(self) -> None:
+        """Rename the current trace file to `<path>.1` once it exceeds the size cap."""
+        try:
+            if os.path.getsize(self.log_file) < self.max_file_bytes:
+                return
+        except OSError:
+            return
+        rotated = f"{self.log_file}.1"
+        try:
+            os.replace(self.log_file, rotated)
+        except OSError as e:
+            logger.warning("Trace log rotation failed for %s: %s", self.log_file, e)

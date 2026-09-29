@@ -40,6 +40,7 @@ async def test_circuit_breaker_timeout_fallback():
     assert resp3.response_type == "clarification"
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_openrouter_live_tool_calling():
     import os
@@ -104,6 +105,7 @@ def test_backend_selection_falls_back_to_openrouter_without_groq(monkeypatch):
     assert isinstance(get_backend(config), OpenRouterBackend)
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_groq_live_tool_calling():
     import os

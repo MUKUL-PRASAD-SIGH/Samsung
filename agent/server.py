@@ -17,14 +17,19 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 import base64
+import os
 from agent.coordinator import AgentCoordinator
 from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent
 from agent.schemas.actions import BaseAction
+from agent.trace_logger import TraceLogger
 
 logger = logging.getLogger("agent.server")
 
 # Global coordinator instance
-coordinator = AgentCoordinator()
+_trace_log_path = os.getenv("TRACE_LOG_PATH")
+coordinator = AgentCoordinator(
+    trace_logger=TraceLogger(log_file=_trace_log_path) if _trace_log_path else None
+)
 
 
 @asynccontextmanager
