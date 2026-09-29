@@ -69,18 +69,16 @@ async def test_memory_enabled_context_stays_flat_and_clean():
     session.ensure_memory()
     mock_backend = await _run_scripted_conversation(session)
 
-    last_call = mock_backend.call_history[-1]
-    joined = " ".join(m["content"] for m in last_call).lower()
-
-    # The correction sequence was Mumbai -> Bangalore -> Mumbai; only the final
-    # resolved value should be reflected in current slots/context, not the
-    # abandoned intermediate one.
+    # The correction sequence was Mumbai -> Bangalore -> Mumbai; only the final resolved value should
+    # be reflected in current slots/context, not the abandoned intermediate one.
     assert "bangalore" not in session.slots.get("destination", "").lower() if "destination" in session.slots else True
 
-    # Prompt size should not exceed a small multiple of a single turn's size,
-    # even after 8 turns -- i.e. it did not grow linearly/unboundedly.
-    single_turn_chars = len(SCRIPTED_TURNS[0])
-    assert len(joined) < single_turn_chars * 50
+    # The prompt must not grow with conversation length: history is windowed, so once the window is full
+    # (after ~5 turns) later prompts stay flat. Comparing lengths avoids tying the test to the size of the
+    # system prompt, which legitimately changes as instructions are added.
+    sizes = [sum(len(m["content"]) for m in call) for call in mock_backend.call_history]
+    assert len(sizes) == len(SCRIPTED_TURNS)
+    assert sizes[-1] <= sizes[5] * 1.15, f"prompt kept growing after the history window filled: {sizes}"
 
 
 def test_report_measured_token_delta(capsys):

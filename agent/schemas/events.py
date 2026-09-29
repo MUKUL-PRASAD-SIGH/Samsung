@@ -59,6 +59,9 @@ class VideoFrameEvent(BaseEvent):
     frame_data: Optional[bytes] = None
     width: int = 0
     height: int = 0
+    frame_id: Optional[str] = None
+    mime: str = "image/jpeg"
+    source: str = "camera"  # "camera" | "screen" | "harness"
 
 
 class InterruptSignalEvent(BaseEvent):

@@ -43,12 +43,16 @@ class Planner:
         event: UserTextEvent,
         session: SessionState,
         plan_epoch: Optional[int] = None,
+        observation: Optional[str] = None,
     ) -> List[BaseAction]:
         """Generate reasoned actions (tool calls, responses, or clarifications) for user input.
 
         `plan_epoch` is the epoch the plan started under. If the session's epoch has moved on by the
         time the LLM answers, the user interrupted mid-thought: the plan is stale, so return no actions
         rather than registering and dispatching work the user has already abandoned (§2.1).
+
+        `observation` is the result of an observation tool (analyze_frame). It is attached to the request and
+        analyze_frame is withheld, so the continuation acts on what was seen instead of looking again.
         """
         actions: List[BaseAction] = []
 
@@ -64,6 +68,8 @@ class Planner:
                     "When the user requests an action, call the appropriate tool. "
                     "If they explicitly ask to book, reserve or cancel something and have given the details, "
                     "call that booking tool directly -- do not search first. "
+                    "If the user refers to something visible (\"this\", \"on my screen\", \"in the picture\", \"the sign\"), "
+                    "call analyze_frame with a specific question about the image, then use its answer to continue the request. "
                     "You have the superpower to synthesize custom, bespoke agents on the fly! "
                     "When the user asks to build, design, audit, analyze, or execute any specialized task (e.g. database schema, SVG graphics, security audit, code, travel), "
                     "call 'spawn_agent' and create a tailored agent with a unique name (e.g. 'db_architect', 'vector_craft', 'sec_auditor', 'bob'), "
@@ -77,10 +83,13 @@ class Planner:
                 ),
             },
             *build_history_messages(session),
-            {"role": "user", "content": event.text},
+            {"role": "user", "content": event.text if observation is None
+             else f"{event.text}\n\n[Vision result for the image the user is sharing: {observation}]"},
         ]
 
         tools = self.tool_router.get_tool_manifests()
+        if observation is not None:
+            tools = [t for t in tools if t.get("function", {}).get("name") != "analyze_frame"]
 
         # Generate LLM response through circuit-breaker-wrapped client
         llm_resp = await self.client.generate(messages, tools=tools)

@@ -13,8 +13,9 @@ from typing import Any, Dict, List, Tuple
 MISSING = object()    # "this slot had no value before"
 UNTRACKED = object()  # "previous value was not recorded for this entity"
 
-# spawn_agent arguments describe the worker (persona, plan, artifact spec), not user facts.
-SKIP_TOOLS = {"spawn_agent"}
+# spawn_agent arguments describe the worker; analyze_frame's argument is a question to the vision model.
+# Neither is a user fact.
+SKIP_TOOLS = {"spawn_agent", "analyze_frame"}
 
 ENTITY_TYPE_BY_KEY: Dict[str, str] = {
     "origin": "LOCATION",

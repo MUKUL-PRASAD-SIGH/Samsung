@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
+from typing import Any, Callable, Coroutine, Deque, Dict, List, Optional, Set, Tuple
 
 from agent.schemas.events import (
     BaseEvent,
@@ -22,6 +24,7 @@ from agent.schemas.events import (
     AudioChunkEvent,
     InterruptSignalEvent,
     ToolResultEvent,
+    VideoFrameEvent,
 )
 from agent.schemas.actions import (
     BaseAction,
@@ -45,6 +48,7 @@ from agent.fast_path.intent_classifier import IntentClassifier
 from agent.slow_path.planner import Planner
 from agent.llm_client import MockLLMBackend, LLMBackend, get_backend, LLMConfig
 from agent.multimodal.asr import ASRProcessor
+from agent.multimodal.vision import ALLOWED_MIME, MAX_FRAME_BYTES, VisionBackend, get_vision_backend
 from agent.multimodal.streaming import (
     PartialDue,
     SpeechStart,
@@ -54,6 +58,19 @@ from agent.multimodal.streaming import (
 )
 
 logger = logging.getLogger("agent.coordinator")
+
+
+FRAMES_PER_SESSION = 3      # ring buffer: only the newest frames matter, and nothing is analyzed until asked
+MAX_FRAME_AGE_S = 15.0      # a frame older than this means sharing stopped: don't answer from a stale image
+
+
+@dataclass
+class _Frame:
+    frame_id: str
+    mime: str
+    data: bytes
+    source: str
+    ts: float
 
 
 @dataclass
@@ -76,6 +93,7 @@ class AgentCoordinator:
         llm_backend: Optional[LLMBackend] = None,
         intent_classifier: Optional[IntentClassifier] = None,
         asr_processor: Optional[ASRProcessor] = None,
+        vision_backend: Optional[VisionBackend] = None,
         enable_debounce: bool = True,
         debounce_window_s: float = 0.10,
     ):
@@ -91,11 +109,14 @@ class AgentCoordinator:
         self.llm_backend = llm_backend or get_backend(LLMConfig())
         self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
         self.asr_processor = asr_processor or ASRProcessor()
+        self.vision_backend = vision_backend or get_vision_backend()
 
         self._debounce_tasks: Dict[str, asyncio.Task] = {}
         self._pending_events: Dict[str, List[UserTextEvent]] = {}
         self._audio_buffers: Dict[str, bytearray] = {}
         self._voice: Dict[str, _VoiceRuntime] = {}
+        self._frames: Dict[str, Deque[_Frame]] = {}   # session_id -> newest camera/screen frames
+        self._call_origin: Dict[str, str] = {}        # call_id -> the user request that spawned it
         self._turn_tasks: Set[asyncio.Task] = set()  # in-progress planning turns (debounced text)
         self._active_plans: Dict[str, int] = {}      # session_id -> planner calls currently awaiting the LLM
         self._running = False
@@ -229,6 +250,10 @@ class AgentCoordinator:
             assert isinstance(event, AudioChunkEvent)
             await self._handle_audio_chunk(session, event)
 
+        elif event.event_type == EventType.VIDEO_FRAME:
+            assert isinstance(event, VideoFrameEvent)
+            self._handle_video_frame(session, event)
+
         elif event.event_type == EventType.TOOL_RESULT:
             assert isinstance(event, ToolResultEvent)
             await self._handle_tool_result(session, event)
@@ -285,6 +310,33 @@ class AgentCoordinator:
                     await self._queue_debounced_user_text(session, text_event)
                 else:
                     await self._handle_user_text(session, text_event)
+
+    # ------------------------------------------------------------------------------------- vision
+    def _handle_video_frame(self, session: SessionState, event: VideoFrameEvent) -> None:
+        """Buffer the latest frame. Deliberately does NO inference: vision runs only when the planner asks."""
+        if not event.frame_data or len(event.frame_data) > MAX_FRAME_BYTES or event.mime not in ALLOWED_MIME:
+            logger.warning("Dropping invalid video frame (%s bytes, %s)", len(event.frame_data or b""), event.mime)
+            return
+        frames = self._frames.setdefault(session.session_id, deque(maxlen=FRAMES_PER_SESSION))
+        frames.append(_Frame(event.frame_id or uuid.uuid4().hex[:8], event.mime, event.frame_data, event.source, event.timestamp))
+
+    def latest_frame(self, session_id: str) -> Optional[_Frame]:
+        frames = self._frames.get(session_id)
+        if not frames or time.time() - frames[-1].ts > MAX_FRAME_AGE_S:
+            return None
+        return frames[-1]
+
+    async def _run_vision(self, session_id: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """The analyze_frame tool: ask the vision backend about the session's newest frame."""
+        question = str(arguments.get("question") or "Describe what you see.")
+        frame = self.latest_frame(session_id)
+        if frame is None:
+            return {"has_frame": False, "answer": "", "note": "No camera or screen frame is being shared right now."}
+        result = await self.vision_backend.analyze(frame.data, frame.mime, question)
+        return {
+            "has_frame": True, "answer": result.answer, "model": result.model,
+            "frame_id": frame.frame_id, "frame_age_s": round(time.time() - frame.ts, 2),
+        }
 
     # ------------------------------------------------------------------ continuous voice streaming
     def _spawn_voice_task(self, runtime: _VoiceRuntime, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
@@ -518,11 +570,23 @@ class AgentCoordinator:
             self._active_plans[sid] -= 1
         if not actions:
             return  # superseded by a newer interrupt: nothing to emit, and no turn to commit
+        turn_has_tool_call, agent_response_text = await self._dispatch_actions(session, actions, origin_text=event.text)
+
+        # A turn that resolved synchronously (spoken_response/clarification, no tool
+        # call in flight) is complete right now -- commit it. Turns that spawned a
+        # tool call/agent worker commit later, in _handle_tool_result, once the
+        # result actually comes back.
+        if not turn_has_tool_call:
+            await self._commit_turn_and_emit_graph(session, agent_response=agent_response_text)
+
+    async def _dispatch_actions(self, session: SessionState, actions: List[BaseAction], origin_text: str) -> Tuple[bool, str]:
+        """Emit a plan's actions and start its tool calls. Returns (started_a_tool_call, spoken_text)."""
         turn_has_tool_call = False
         agent_response_text = ""
         for action in actions:
             if isinstance(action, ToolCallAction):
                 turn_has_tool_call = True
+                self._call_origin[action.call_id] = origin_text
                 await self.emit_action(action)
                 # Spawn background execution task
                 task = asyncio.create_task(
@@ -539,11 +603,28 @@ class AgentCoordinator:
                 if isinstance(action, SpokenResponseAction):
                     agent_response_text = action.text
                 await self.emit_action(action)
+        return turn_has_tool_call, agent_response_text
 
-        # A turn that resolved synchronously (spoken_response/clarification, no tool
-        # call in flight) is complete right now -- commit it. Turns that spawned a
-        # tool call/agent worker commit later, in _handle_tool_result, once the
-        # result actually comes back.
+    async def _continue_after_observation(self, session: SessionState, request_text: str, result: Dict[str, Any]) -> None:
+        """analyze_frame is an OBSERVATION tool: its output is input to further reasoning, not a final answer.
+
+        Re-plan the user's original request with the observation attached ("book a flight to the city on this
+        poster" needs the vision result before search_flights can be called). One step only -- the continuation
+        plan is not offered analyze_frame again, so it cannot loop.
+        """
+        observation = result.get("answer") or result.get("note") or "The image could not be read."
+        sid = session.session_id
+        self._active_plans[sid] = self._active_plans.get(sid, 0) + 1
+        try:
+            actions = await self.planner.plan(
+                UserTextEvent(session_id=sid, text=request_text), session,
+                plan_epoch=session.epoch, observation=observation,
+            )
+        finally:
+            self._active_plans[sid] -= 1
+        if not actions:
+            return  # interrupted while re-planning: the newer turn owns the conversation now
+        turn_has_tool_call, agent_response_text = await self._dispatch_actions(session, actions, origin_text=request_text)
         if not turn_has_tool_call:
             await self._commit_turn_and_emit_graph(session, agent_response=agent_response_text)
 
@@ -630,6 +711,15 @@ class AgentCoordinator:
             except Exception as e:
                 logger.exception("Error executing autonomous worker '%s': %s", worker.name, e)
                 error = str(e)
+        elif tool_name == "analyze_frame":
+            try:
+                result = await self._run_vision(session_id, arguments)
+            except asyncio.CancelledError:
+                logger.info("Vision call (call_id=%s) cancelled under epoch %d", call_id, epoch)
+                return
+            except Exception as e:
+                logger.warning("Vision analysis failed: %s", e)
+                error = str(e)
         else:
             try:
                 result = await self.tool_router.execute_tool(tool_name, arguments)
@@ -660,6 +750,8 @@ class AgentCoordinator:
             error=event.error,
         )
 
+        origin_text = self._call_origin.pop(event.call_id, None)
+
         if not completed:
             logger.info(
                 "Discarding stale or cancelled tool result for call_id '%s' (event epoch=%d, session epoch=%d)",
@@ -667,6 +759,11 @@ class AgentCoordinator:
                 event.epoch,
                 session.epoch,
             )
+            return
+
+        if event.tool_name == "analyze_frame" and not event.error and origin_text and isinstance(event.result, dict):
+            await self.emit_action(session.get_snapshot())
+            self._spawn_turn(self._continue_after_observation(session, origin_text, event.result))
             return
 
         # Every completed call gets a visible reply: a failure notice, an artifact

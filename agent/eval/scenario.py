@@ -16,8 +16,9 @@ class Step:
     """One stimulus on the timeline, `at_s` seconds after scenario start."""
 
     at_s: float
-    kind: str = "text"            # "text" | "interrupt" (explicit InterruptSignalEvent) | "voice"
+    kind: str = "text"            # "text" | "interrupt" (explicit InterruptSignalEvent) | "voice" | "frame"
     text: str = ""                # text steps
+    frame_text: str = ""          # frame steps: text rendered onto the synthetic image (e.g. a poster reading "GOA")
     audio: Optional[str] = None   # voice steps: fixture file name in tests/fixtures/audio
     lead_s: float = 0.3           # voice: silence before speech begins
     tail_s: float = 1.5           # voice: silence after speech (lets the endpointer close the utterance)
@@ -47,12 +48,18 @@ class Scenario:
     latency_s: Dict[str, float] = field(default_factory=dict)             # per-tool latency (default 1.5s)
     faults: Dict[str, FaultInjectionConfig] = field(default_factory=dict)
     mock_llm: List[LLMResponse] = field(default_factory=list)             # scripted LLM decisions (mock mode)
+    mock_vision: List[str] = field(default_factory=list)                  # scripted vision answers (mock mode)
+    vision_latency_s: float = 0.3                                          # mock vision latency
     expect_failure_notice: bool = False                                    # a failing tool must be reported
     max_s: float = 25.0                                                    # scenario wall-clock cap
 
     @property
     def has_interrupts(self) -> bool:
         return any(s.interrupts for s in self.steps)
+
+    @property
+    def uses_vision(self) -> bool:
+        return any(s.kind == "frame" for s in self.steps) or "vision" in self.tags
 
     @property
     def uses_voice(self) -> bool:

@@ -14,7 +14,7 @@ from typing import Optional
 from agent.fast_path.intent_classifier import IntentClassifier
 from agent.fast_path.templates import generate_filler
 from agent.multimodal.asr import ASRProcessor
-from agent.multimodal.vision import VisionProcessor
+from agent.multimodal.vision import get_vision_backend
 from agent.llm_client import LLMBackend, LLMConfig, get_backend
 
 logger = logging.getLogger("agent.warmup")
@@ -65,8 +65,7 @@ async def run_warmup_hook(
 
     # 5. Warm-up Vision if requested
     if warm_vision:
-        vis = VisionProcessor()
-        vis.warmup()
+        get_vision_backend()  # hosted backend: nothing to preload, but fail fast on bad configuration
 
     duration = time.time() - start_time
     logger.info("Warm-up sequence completed in %.2f seconds.", duration)

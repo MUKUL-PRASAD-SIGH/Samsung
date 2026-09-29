@@ -166,6 +166,25 @@ class ToolRouter:
             # Handled directly by coordinator execution engine for streaming
             return {"status": "completed", "agent_name": name, "role": role, "goal": goal}
 
+        async def _analyze_frame(question: str = "Describe what you see.", **kwargs):
+            # Executed by the coordinator, which owns the per-session frame buffer and the vision backend.
+            return {"answer": "", "has_frame": False}
+
+        self.register_tool(
+            name="analyze_frame",
+            description=(
+                "Look at the user's shared camera or screen frame and answer a question about it. Use when the user "
+                "refers to something visible (\"this\", \"on my screen\", \"in the picture\", \"the sign\")."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {"question": {"type": "string", "description": "What you need to know from the image"}},
+                "required": ["question"],
+            },
+            is_state_modifying=False,
+            handler=_analyze_frame,
+        )
+
         self.register_tool(
             name="spawn_agent",
             description="Synthesize and spawn a bespoke autonomous agent with custom persona, plan, and artifact requirements",
