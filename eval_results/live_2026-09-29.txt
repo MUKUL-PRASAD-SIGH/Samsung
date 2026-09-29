@@ -1,0 +1,30 @@
+EVAL RESULTS  (llm=live; scores are 0-100; interruption shown only where a scenario interrupts)
+scenario                       task   intr    lat   safe  TOTAL  flags
+------------------------------------------------------------------------------
+flight_search                100.0   --  100.0 100.0 100.0  
+hotel_search_nights          100.0   --  100.0 100.0 100.0  
+weather_query                100.0   --  100.0 100.0 100.0  
+book_flight                  100.0   --   99.6 100.0  99.9  
+multi_turn_carry_over        100.0   --  100.0 100.0 100.0  
+flights_then_hotel           100.0   --  100.0 100.0 100.0  
+correction_mid_search        100.0 100.0  87.5 100.0  98.1  
+correction_mid_booking       100.0 100.0  92.6 100.0  98.9  
+stop_command                 100.0 100.0 100.0 100.0 100.0  
+rapid_fire_corrections       100.0 100.0  95.3 100.0  99.3  
+explicit_interrupt_signal    100.0 100.0 100.0 100.0 100.0  
+duplicate_booking_race       100.0   --   93.0 100.0  98.4  
+duplicate_booking_paraphrase 100.0   --   96.1 100.0  99.1  
+tool_failure_reported        100.0   --   99.5 100.0  99.9  
+voice_task                   100.0   --   74.6 100.0  94.1  
+voice_barge_in               100.0  87.4  73.1 100.0  91.5  
+------------------------------------------------------------------------------
+SUITE (category means)       100.0  97.9  94.5 100.0  98.4
+weights                         40     35     15     10
+
+Raw measurements (independent of the proxy formulas):
+  interrupt->cancel latency : median 0.101s, worst 1.357s
+  user done -> first ack    : median 0.101s
+  user done -> first reply  : median 2.048s
+  stale completions / re-runs / duplicate state changes : 0 / 0 / 0
+  invalid payloads / trace violations : 0 / 0
+

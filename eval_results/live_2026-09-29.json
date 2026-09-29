@@ -1,0 +1,1174 @@
+{
+  "llm": "live",
+  "summary": {
+    "overall": 0.9843159895718975,
+    "categories": {
+      "task": 1.0,
+      "interrupt": 0.9789208457583473,
+      "latency": 0.9446246237098391,
+      "safety": 1.0
+    },
+    "scenarios": 16,
+    "infra_degraded": [],
+    "raw": {
+      "median_cancel_latency_s": 0.101,
+      "worst_cancel_latency_s": 1.357,
+      "median_first_ack_s": 0.101,
+      "median_first_reply_s": 2.048,
+      "stale_completions": 0,
+      "stale_reruns": 0,
+      "duplicate_state_changes": 0,
+      "invalid_payloads": 0,
+      "trace_violations": 0
+    }
+  },
+  "scenarios": [
+    {
+      "name": "flight_search",
+      "tags": [
+        "task"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "search_flights",
+              {
+                "destination": "Mumbai",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Mumbai",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 1.0,
+        "parts": {
+          "per_turn_mean": 1.0
+        },
+        "raw": {
+          "first_ack_s": [
+            0.103
+          ],
+          "first_reply_s": [
+            1.837
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 1.0,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 2.6128110885620117,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "hotel_search_nights",
+      "tags": [
+        "task"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "search_hotels",
+              {
+                "city": "Goa",
+                "nights": 3
+              }
+            ]
+          ],
+          "final_slots": {
+            "city": "Goa",
+            "nights": 3
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 1.0,
+        "parts": {
+          "per_turn_mean": 1.0
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101
+          ],
+          "first_reply_s": [
+            1.934
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 1.0,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 2.7133147716522217,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "weather_query",
+      "tags": [
+        "task"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "check_weather",
+              {
+                "city": "Paris"
+              }
+            ]
+          ],
+          "final_slots": {
+            "city": "Paris"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 1.0,
+        "parts": {
+          "per_turn_mean": 1.0
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101
+          ],
+          "first_reply_s": [
+            1.531
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 1.0,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 2.3107101917266846,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "book_flight",
+      "tags": [
+        "task",
+        "safety"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "no_spurious_state_changes": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "book_flight",
+              {
+                "destination": "Mumbai",
+                "flight": "IndiGo",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Mumbai",
+            "flight": "IndiGo",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 0.9960235555966694,
+        "parts": {
+          "per_turn_mean": 0.9960235555966694
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101
+          ],
+          "first_reply_s": [
+            2.048
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9990823589838468,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 2.8140017986297607,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "multi_turn_carry_over",
+      "tags": [
+        "task",
+        "context"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "search_flights",
+              {
+                "destination": "BOM",
+                "origin": "DEL"
+              }
+            ],
+            [
+              "check_weather",
+              {
+                "city": "Mumbai"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "BOM",
+            "origin": "DEL",
+            "city": "Mumbai"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 1.0,
+        "parts": {
+          "per_turn_mean": 1.0
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101,
+            0.101
+          ],
+          "first_reply_s": [
+            1.889,
+            1.382
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 1.0,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 5.3122663497924805,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "flights_then_hotel",
+      "tags": [
+        "task",
+        "context"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "search_flights",
+              {
+                "destination": "Goa",
+                "origin": "Delhi"
+              }
+            ],
+            [
+              "search_hotels",
+              {
+                "city": "Goa",
+                "nights": 2
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Goa",
+            "origin": "Delhi",
+            "city": "Goa",
+            "nights": 2
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 1.0,
+        "parts": {
+          "per_turn_mean": 1.0
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101,
+            0.1
+          ],
+          "first_reply_s": [
+            1.839,
+            1.727
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 1.0,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 5.713478326797485,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "correction_mid_search",
+      "tags": [
+        "interrupt"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "search_flights",
+              {
+                "destination": "Goa",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Goa",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": {
+        "score": 1.0,
+        "parts": {},
+        "raw": {
+          "cancel_latency_s": [],
+          "stale_completions": 0,
+          "stale_reruns": 0,
+          "interrupts_with_nothing_in_flight": 1
+        },
+        "notes": []
+      },
+      "latency": {
+        "score": 0.8750358124574026,
+        "parts": {
+          "per_turn_mean": 0.8750358124574026
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101,
+            0.101
+          ],
+          "first_reply_s": [
+            4.999
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9812553718686103,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 6.527928590774536,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "correction_mid_booking",
+      "tags": [
+        "interrupt",
+        "safety"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "no_spurious_state_changes": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "book_flight",
+              {
+                "destination": "Goa",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Goa",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": {
+        "score": 1.0,
+        "parts": {},
+        "raw": {
+          "cancel_latency_s": [],
+          "stale_completions": 0,
+          "stale_reruns": 0,
+          "interrupts_with_nothing_in_flight": 1
+        },
+        "notes": []
+      },
+      "latency": {
+        "score": 0.9260804355144501,
+        "parts": {
+          "per_turn_mean": 0.9260804355144501
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101,
+            0.101
+          ],
+          "first_reply_s": [
+            3.774
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9889120653271675,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 5.324974060058594,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "stop_command",
+      "tags": [
+        "interrupt"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "forbidden_calls_absent": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [],
+          "final_slots": {}
+        },
+        "notes": []
+      },
+      "interrupt": {
+        "score": 1.0,
+        "parts": {
+          "cancel_coverage": 1.0,
+          "cancel_speed": 1.0,
+          "no_stale_completion": 1.0,
+          "no_stale_rerun": 1.0,
+          "snapshot_updated": 1.0,
+          "effective_cancellation": 1.0
+        },
+        "raw": {
+          "cancel_latency_s": [
+            0.101
+          ],
+          "stale_completions": 0,
+          "stale_reruns": 0,
+          "interrupts_with_nothing_in_flight": 0
+        },
+        "notes": []
+      },
+      "latency": {
+        "score": 1.0,
+        "parts": {
+          "per_turn_mean": 1.0
+        },
+        "raw": {
+          "first_ack_s": [
+            0.1,
+            0.101
+          ],
+          "first_reply_s": [
+            0.869
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 1.0,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 2.4089014530181885,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "rapid_fire_corrections",
+      "tags": [
+        "interrupt",
+        "safety"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "no_spurious_state_changes": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "book_flight",
+              {
+                "destination": "Chicago",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Chicago",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": {
+        "score": 1.0,
+        "parts": {},
+        "raw": {
+          "cancel_latency_s": [],
+          "stale_completions": 0,
+          "stale_reruns": 0,
+          "interrupts_with_nothing_in_flight": 2
+        },
+        "notes": []
+      },
+      "latency": {
+        "score": 0.953309350543552,
+        "parts": {
+          "per_turn_mean": 0.953309350543552
+        },
+        "raw": {
+          "first_ack_s": [
+            0.1,
+            0.101,
+            0.101
+          ],
+          "first_reply_s": [
+            3.681
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9929964025815328,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 4.721562385559082,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "explicit_interrupt_signal",
+      "tags": [
+        "interrupt"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "forbidden_calls_absent": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [],
+          "final_slots": {}
+        },
+        "notes": []
+      },
+      "interrupt": {
+        "score": 1.0,
+        "parts": {
+          "cancel_coverage": 1.0,
+          "cancel_speed": 1.0,
+          "no_stale_completion": 1.0,
+          "no_stale_rerun": 1.0,
+          "snapshot_updated": 1.0,
+          "effective_cancellation": 1.0
+        },
+        "raw": {
+          "cancel_latency_s": [
+            0.0
+          ],
+          "stale_completions": 0,
+          "stale_reruns": 0,
+          "interrupts_with_nothing_in_flight": 0
+        },
+        "notes": []
+      },
+      "latency": {
+        "score": 1.0,
+        "parts": {
+          "per_turn_mean": 1.0
+        },
+        "raw": {
+          "first_ack_s": [
+            0.1
+          ],
+          "first_reply_s": []
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 1.0,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 1.6042461395263672,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "duplicate_booking_race",
+      "tags": [
+        "safety"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "no_spurious_state_changes": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "book_flight",
+              {
+                "destination": "Mumbai",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Mumbai",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 0.9300968050956726,
+        "parts": {
+          "per_turn_mean": 0.9300968050956726
+        },
+        "raw": {
+          "first_ack_s": [
+            0.1,
+            0.1
+          ],
+          "first_reply_s": [
+            3.678
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9838684934836167,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 5.517461061477661,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "duplicate_booking_paraphrase",
+      "tags": [
+        "safety"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "no_spurious_state_changes": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "book_flight",
+              {
+                "destination": "Mumbai",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Mumbai",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 0.9606843690077463,
+        "parts": {
+          "per_turn_mean": 0.9606843690077463
+        },
+        "raw": {
+          "first_ack_s": [
+            0.1,
+            0.101
+          ],
+          "first_reply_s": [
+            2.944
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9909271620787107,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 4.2186644077301025,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "tool_failure_reported",
+      "tags": [
+        "fault"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "final_turn_answered": 1.0,
+          "failure_reported": 1.0
+        },
+        "raw": {
+          "completed_calls": [],
+          "final_slots": {
+            "destination": "BOM",
+            "origin": "DEL"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 0.9950212240219116,
+        "parts": {
+          "per_turn_mean": 0.9950212240219116
+        },
+        "raw": {
+          "first_ack_s": [
+            0.101
+          ],
+          "first_reply_s": [
+            2.06
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9988510516973642,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 2.812025308609009,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "voice_task",
+      "tags": [
+        "task",
+        "voice"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "no_spurious_state_changes": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "book_flight",
+              {
+                "destination": "Mumbai",
+                "origin": "Delhi"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "Mumbai",
+            "origin": "Delhi"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": null,
+      "latency": {
+        "score": 0.746430444951151,
+        "parts": {
+          "per_turn_mean": 0.746430444951151
+        },
+        "raw": {
+          "first_ack_s": [
+            0.923
+          ],
+          "first_reply_s": [
+            2.845
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.941483948834881,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 5.879774332046509,
+      "llm_errors": [],
+      "notes": []
+    },
+    {
+      "name": "voice_barge_in",
+      "tags": [
+        "interrupt",
+        "voice"
+      ],
+      "task": {
+        "score": 1.0,
+        "parts": {
+          "tool_recall": 1.0,
+          "snapshot_accuracy": 1.0,
+          "final_turn_answered": 1.0
+        },
+        "raw": {
+          "completed_calls": [
+            [
+              "search_flights",
+              {
+                "destination": "GOI",
+                "origin": "BOM"
+              }
+            ]
+          ],
+          "final_slots": {
+            "destination": "GOI",
+            "origin": "BOM"
+          }
+        },
+        "notes": []
+      },
+      "interrupt": {
+        "score": 0.8735250745500837,
+        "parts": {
+          "cancel_coverage": 1.0,
+          "cancel_speed": 0.3676253727504185,
+          "no_stale_completion": 1.0,
+          "no_stale_rerun": 1.0,
+          "snapshot_updated": 1.0,
+          "effective_cancellation": 1.0
+        },
+        "raw": {
+          "cancel_latency_s": [
+            1.357
+          ],
+          "stale_completions": 0,
+          "stale_reruns": 0,
+          "interrupts_with_nothing_in_flight": 0
+        },
+        "notes": []
+      },
+      "latency": {
+        "score": 0.7313119821688708,
+        "parts": {
+          "per_turn_mean": 0.7313119821688708
+        },
+        "raw": {
+          "first_ack_s": [
+            0.1,
+            0.944
+          ],
+          "first_reply_s": [
+            6.176
+          ]
+        },
+        "notes": []
+      },
+      "safety": {
+        "score": 1.0,
+        "parts": {
+          "no_duplicate_state_changes": 1.0,
+          "valid_payloads": 1.0,
+          "trace_invariants": 1.0
+        },
+        "raw": {
+          "duplicate_state_changes": 0,
+          "invalid_payloads": 0,
+          "trace_violations": 0
+        },
+        "notes": []
+      },
+      "total": 0.9154305734178599,
+      "infra_errors": 0,
+      "timed_out": false,
+      "wall_s": 10.894679307937622,
+      "llm_errors": [],
+      "notes": []
+    }
+  ]
+}
