@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 import json
 import os
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -85,23 +86,47 @@ class LLMResponse(BaseModel):
     memory_update: Optional[Dict[str, Any]] = None
 
 
+_MEMORY_MARKER = re.compile(r"[*_`]*MEMORY_UPDATE[*_`]*\s*:?[*_`]*\s*")
+_TRAILING_NOISE = re.compile(r"(?:\s*(?:-{3,}|\*{3,}|_{3,}|```[a-zA-Z]*))+\s*$")
+
+
 def _extract_memory_update(content: Optional[str]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Strip a trailing 'MEMORY_UPDATE: {...}' JSON blob out of LLM content, if present.
+    """Strip a 'MEMORY_UPDATE: {...}' block out of LLM content and parse it.
 
-    This is the one place slot/entity extraction from the LLM's own output happens --
-    there is no other extraction path anywhere in the codebase. Returns
-    (cleaned_content, memory_update_dict_or_None). Any parse failure is swallowed and
-    treated as "no memory update" so a malformed blob never breaks the response.
+    This is the one place slot/entity extraction from the LLM's own text happens. Tolerates what
+    the live model actually does: a preceding '---' rule, a code fence, bold markers, and text
+    after the JSON. The marker is ALWAYS removed from the visible reply -- even when the JSON is
+    malformed -- so the raw line never leaks into chat or speech; unparseable blocks yield None.
+    Returns (cleaned_content, memory_update_dict_or_None).
     """
-    if not content or "MEMORY_UPDATE:" not in content:
+    if not content:
+        return content, None
+    match = _MEMORY_MARKER.search(content)
+    if not match:
         return content, None
 
-    prefix, _, suffix = content.partition("MEMORY_UPDATE:")
-    try:
-        memory_update = json.loads(suffix.strip())
-    except (json.JSONDecodeError, ValueError):
-        return content, None
-    return prefix.strip(), memory_update
+    before = content[: match.start()]
+    rest = content[match.end():]
+    memory_update: Optional[Dict[str, Any]] = None
+    after = ""
+
+    brace = rest.find("{")
+    if brace != -1:
+        try:
+            parsed, end_idx = json.JSONDecoder().raw_decode(rest[brace:])
+            if isinstance(parsed, dict):
+                memory_update = parsed
+            after = rest[brace + end_idx:]
+        except (json.JSONDecodeError, ValueError):
+            after = ""  # malformed: drop the rest of the block rather than show it
+    else:
+        after = ""
+
+    after = re.sub(r"^\s*```\s*", "", after)  # closing fence of a fenced block
+    cleaned = _TRAILING_NOISE.sub("", before).rstrip()
+    if after.strip():
+        cleaned = f"{cleaned}\n\n{after.strip()}".strip()
+    return cleaned, memory_update
 
 
 class LLMBackend(ABC):

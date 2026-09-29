@@ -41,6 +41,7 @@ class EntityCandidate:
     key: str
     value: Any
     epoch: int
+    source_call_id: Optional[str] = None  # set for entities derived from a tool call's arguments
 
 
 @dataclass
@@ -53,6 +54,8 @@ class CanonicalTurn:
     agent_response: str
     artifacts_produced: List[Dict[str, Any]] = field(default_factory=list)
     entity_candidates: List[EntityCandidate] = field(default_factory=list)
+    # slot key -> previous value, for slots this turn changed from a different existing value
+    overrides: Dict[str, Any] = field(default_factory=dict)
     intent_shift: Optional[str] = None
     aborted_calls_count: int = 0
     timestamp: float = field(default_factory=time.time)
@@ -87,16 +90,29 @@ class TurnScratchpad:
             )
         )
 
-    def record_entity_candidate(self, entity_type: str, key: str, value: Any) -> None:
+    def record_entity_candidate(
+        self, entity_type: str, key: str, value: Any, call_id: Optional[str] = None
+    ) -> None:
         self.entity_candidates.append(
-            EntityCandidate(entity_type=entity_type, key=key, value=value, epoch=self._session.epoch)
+            EntityCandidate(
+                entity_type=entity_type,
+                key=key,
+                value=value,
+                epoch=self._session.epoch,
+                source_call_id=call_id,
+            )
         )
 
     def record_intent_shift(self, new_intent: str) -> None:
         self.intent_shift = new_intent
 
     def mark_aborted(self, call_id: str, tool_name: str, reason: str) -> None:
-        """Called when session.bump_epoch() cancels an in-flight call belonging to this turn."""
+        """Called when session.bump_epoch() cancels an in-flight call belonging to this turn.
+
+        Entities that came from the aborted call's arguments are discarded: the user abandoned
+        them (e.g. "Mumbai" before "actually, Goa"), so they must not leak into slots later.
+        """
+        self.entity_candidates = [c for c in self.entity_candidates if c.source_call_id != call_id]
         self.aborted_calls.append(
             InFlightCallRecord(
                 call_id=call_id,
@@ -124,6 +140,12 @@ class TurnScratchpad:
         for cand in self.entity_candidates:
             final_diff[cand.key] = cand.value
 
+        overrides = {
+            key: self._session.slots[key]
+            for key, new_value in final_diff.items()
+            if key in self._session.slots and self._session.slots[key] != new_value
+        }
+
         if final_diff or self.intent_shift:
             self._session.patch_slots(final_diff, new_intent=self.intent_shift)
 
@@ -138,6 +160,7 @@ class TurnScratchpad:
             agent_response=agent_response,
             artifacts_produced=list(artifacts or []),
             entity_candidates=list(self.entity_candidates),
+            overrides=overrides,
             intent_shift=self.intent_shift,
             aborted_calls_count=len(self.aborted_calls),
         )

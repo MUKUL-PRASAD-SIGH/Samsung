@@ -18,11 +18,24 @@ class IdempotencyStore:
         self._store: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
-    def generate_key(intent: Optional[str], slots: Dict[str, Any], epoch: int, tool_name: str = "") -> str:
-        """Compute deterministic idempotency key for a given call configuration."""
+    def generate_key(
+        intent: Optional[str],
+        slots: Dict[str, Any],
+        epoch: int,
+        tool_name: str = "",
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Compute deterministic idempotency key for a given call configuration.
+
+        `arguments` distinguishes two different calls to the same tool in the same state
+        (e.g. booking DEL->BOM vs DEL->GOA) -- without it the second was dropped as a
+        "duplicate". Omitting it preserves the original key for callers that don't pass it.
+        """
         # Clean slots representation with sorted keys
-        sorted_slots_str = json.dumps(slots, sort_keys=True)
+        sorted_slots_str = json.dumps(slots, sort_keys=True, default=str)
         raw = f"{tool_name}:{intent or 'none'}:{sorted_slots_str}:{epoch}"
+        if arguments:
+            raw += f":{json.dumps(arguments, sort_keys=True, default=str)}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def exists(self, key: str) -> bool:

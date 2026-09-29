@@ -156,6 +156,7 @@ class SessionState:
                 slots=self.slots,
                 epoch=self.epoch,
                 tool_name=tool_name,
+                arguments=arguments,
             )
             if self.idempotency_store.exists(idempotency_key):
                 # Duplicate state-modifying call detected: skip to prevent duplicate action

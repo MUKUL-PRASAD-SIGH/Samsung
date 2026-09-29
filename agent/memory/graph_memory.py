@@ -96,8 +96,33 @@ class GraphMemory:
         self.turns[node.id] = node
         if self._head_turn_id is not None:
             self.edges.append(Edge(source=self._head_turn_id, target=node.id, edge_type="NEXT_TURN"))
-            if canonical_turn.intent_shift or canonical_turn.entity_candidates:
-                self.edges.append(Edge(source=node.id, target=self._head_turn_id, edge_type="SUPERSEDES"))
+        # SUPERSEDES marks a real correction: this turn replaced a slot value an earlier turn had
+        # established (e.g. destination Mumbai -> Goa). Point at each turn that held the old value.
+        superseded = set()
+        for key, old_value in canonical_turn.overrides.items():
+            # Prefer the turn whose entity introduced the old value (later turns merely inherit
+            # it in their slot snapshots); fall back to the latest turn that held it.
+            source_id = next(
+                (
+                    e.source_turn_id
+                    for e in reversed(list(self.entities.values()))
+                    if e.key == key and e.value == old_value
+                    and e.source_turn_id in self.turns and not self.turns[e.source_turn_id].pruned
+                ),
+                None,
+            )
+            if source_id is None:
+                source_id = next(
+                    (
+                        pid for pid in reversed(self._turn_order)
+                        if not self.turns[pid].pruned and self.turns[pid].slots_snapshot.get(key) == old_value
+                    ),
+                    None,
+                )
+            if source_id is not None:
+                superseded.add(source_id)
+        for prior_id in sorted(superseded):
+            self.edges.append(Edge(source=node.id, target=prior_id, edge_type="SUPERSEDES"))
         self._turn_order.append(node.id)
         self._head_turn_id = node.id
 

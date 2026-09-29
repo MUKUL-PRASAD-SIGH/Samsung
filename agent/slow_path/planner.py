@@ -22,6 +22,7 @@ from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
 from agent.llm_client import LLMBackend, CircuitBreakerLLMClient, LLMConfig
 from agent.memory.context_builder import build_context_block, build_history_messages
+from agent.memory.tool_slots import entities_from_tool_call
 
 logger = logging.getLogger("agent.planner")
 
@@ -61,9 +62,9 @@ class Planner:
                     "an exact specialization role, custom system_prompt, tailored step-by-step thinking plan, and expected_artifact. "
                     "Extract slot arguments accurately. "
                     "If you detect entities worth remembering (locations, dates, components, etc.) or a shift in "
-                    "the user's overall intent, append a trailing line of the exact form "
+                    "the user's overall intent, end your reply with one final line of the exact form "
                     'MEMORY_UPDATE: {"entities": [{"type": "LOCATION", "key": "destination", "value": "BOM"}], "intent_shift": null} '
-                    "after your normal response. Omit it entirely if there is nothing new to record. "
+                    "(plain text: no code fence, no separator line, nothing after it). Omit it entirely if there is nothing new to record. "
                     f"{build_context_block(session)}"
                 ),
             },
@@ -109,6 +110,12 @@ class Planner:
 
             if tool_action is not None:
                 actions.append(tool_action)
+                # The arguments the model chose are the resolved parameters for this turn; record
+                # them as call-scoped entities (dropped if this call is later aborted by a
+                # correction) so slots/graph reflect tool turns, which never carry MEMORY_UPDATE.
+                if session.scratchpad is not None:
+                    for entity_type, key, value in entities_from_tool_call(tool_name, arguments):
+                        session.scratchpad.record_entity_candidate(entity_type, key, value, call_id=call_id)
 
         elif llm_resp.response_type == "clarification":
             actions.append(
