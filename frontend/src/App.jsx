@@ -170,6 +170,44 @@ const DEMO_CLOCK_ARTIFACT = {
   description: 'Hi, I am bob. Here is the code in typescript for your Analogue Clock interface.',
 };
 
+// Captures mic audio, resamples to 16 kHz mono and posts 100 ms Int16 PCM frames to the main thread.
+const PCM_WORKLET_SOURCE = `
+class PCMCapture extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.ratio = sampleRate / 16000;   // input samples per output sample (1 when the context runs at 16 kHz)
+    this.pos = 1;                       // read position within [prev, ...block]
+    this.prev = 0;
+    this.frame = new Int16Array(1600);
+    this.filled = 0;
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch) return true;
+    const buf = new Float32Array(ch.length + 1);
+    buf[0] = this.prev;
+    buf.set(ch, 1);
+    let p = this.pos;
+    while (p < buf.length - 1) {
+      const i = Math.floor(p);
+      const f = p - i;
+      const v = Math.max(-1, Math.min(1, buf[i] * (1 - f) + buf[i + 1] * f));
+      this.frame[this.filled++] = v < 0 ? v * 32768 : v * 32767;
+      if (this.filled === this.frame.length) {
+        this.port.postMessage(this.frame.buffer, [this.frame.buffer]);
+        this.frame = new Int16Array(1600);
+        this.filled = 0;
+      }
+      p += this.ratio;
+    }
+    this.pos = p - (buf.length - 1);
+    this.prev = ch[ch.length - 1];
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PCMCapture);
+`;
+
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
@@ -179,7 +217,9 @@ export default function App() {
   const [sessionId] = useState(() => 'sess_' + Math.random().toString(36).substring(2, 9));
   const [connected, setConnected] = useState(false);
   const [inputText, setInputText] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
+  const [isRecording, setIsRecording] = useState(false); // hands-free voice streaming is on
+  const [isSpeaking, setIsSpeaking] = useState(false);     // server VAD currently hears the user
+  const [livePartial, setLivePartial] = useState('');      // latest partial transcript of that speech
   const [activeRightTab, setActiveRightTab] = useState('agents'); // 'agents' | 'snapshot' | 'trace' | 'graph'
   const [copiedCode, setCopiedCode] = useState(false);
   const [epochPulsing, setEpochPulsing] = useState(false);
@@ -235,10 +275,11 @@ export default function App() {
   ]);
 
   const wsRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
+  const voiceRef = useRef(null); // { stream, ctx, node, sink } while streaming
   const chatScrollRef = useRef(null);
-  const isTyping = inputText.trim().length > 0;
+  // What the user is currently producing but hasn't submitted: typed draft or live speech.
+  const draftText = isSpeaking ? livePartial : inputText;
+  const isTyping = draftText.trim().length > 0 || isSpeaking;
 
   // Auto-scroll chat
   useEffect(() => {
@@ -261,6 +302,7 @@ export default function App() {
 
     ws.onclose = () => {
       setConnected(false);
+      stopVoiceStream(false); // the server dropped the stream too; just release the mic locally
       addTrace('system', 'Disconnected from coordinator stream');
     };
 
@@ -273,7 +315,10 @@ export default function App() {
       }
     };
 
-    return () => ws.close();
+    return () => {
+      stopVoiceStream(false);
+      ws.close();
+    };
   }, [sessionId]);
 
   const addTrace = (type, text, payload = null) => {
@@ -426,19 +471,56 @@ export default function App() {
 
     } else if (action.action_type === 'transcript') {
       const heard = (action.text || '').trim();
-      setMessages((prev) => {
-        // Resolve the oldest still-pending voice placeholder with what Whisper heard.
-        const idx = prev.findIndex((m) => m.pendingVoice);
-        if (idx === -1) return prev;
-        const next = [...prev];
-        next[idx] = {
-          ...next[idx],
-          pendingVoice: false,
-          text: heard ? `🎤 ${heard}` : '🎤 (no speech detected — try again)',
-        };
-        return next;
-      });
-      addTrace('audio', heard ? `Whisper (${action.asr_model}, ${action.latency_ms}ms): "${heard}"` : 'Whisper: no speech detected', action);
+      if (action.utterance_id) {
+        // Streaming voice: partials refine one bubble; the final settles it (or drops it if it was noise).
+        if (action.is_partial) setLivePartial(heard);
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.utteranceId === action.utterance_id);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          if (action.is_partial) {
+            next[idx] = { ...next[idx], text: `🎤 ${heard}…` };
+          } else if (heard) {
+            next[idx] = { ...next[idx], pendingVoice: false, text: `🎤 ${heard}` };
+          } else {
+            next.splice(idx, 1);
+          }
+          return next;
+        });
+        if (!action.is_partial) {
+          addTrace('audio', heard ? `Whisper (${action.asr_model}, ${action.latency_ms}ms): "${heard}"` : 'Voice: noise, no speech recognized', action);
+        }
+      } else {
+        setMessages((prev) => {
+          // Push-to-talk / legacy: resolve the oldest still-pending voice placeholder.
+          const idx = prev.findIndex((m) => m.pendingVoice);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            pendingVoice: false,
+            text: heard ? `🎤 ${heard}` : '🎤 (no speech detected — try again)',
+          };
+          return next;
+        });
+        addTrace('audio', heard ? `Whisper (${action.asr_model}, ${action.latency_ms}ms): "${heard}"` : 'Whisper: no speech detected', action);
+      }
+
+    } else if (action.action_type === 'voice_activity') {
+      if (action.state === 'speech_start') {
+        setIsSpeaking(true);
+        setLivePartial('');
+        setMessages((prev) => [
+          ...prev,
+          { id: `voice-${action.utterance_id}`, role: 'user', text: '🎤 …', pendingVoice: true, utteranceId: action.utterance_id },
+        ]);
+      } else if (action.state === 'speech_end') {
+        setIsSpeaking(false);
+      } else if (action.state === 'barge_in') {
+        addTrace('tool_cancel', `Voice barge-in interrupted running work: "${action.detail}"`, action);
+      } else {
+        addTrace('audio', `Voice stream ${action.state}`);
+      }
 
     } else if (action.action_type === 'graph_update') {
       if (action.op === 'full') {
@@ -548,50 +630,60 @@ export default function App() {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
-  const toggleRecording = async () => {
-    if (isRecording) {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
+  const stopVoiceStream = (notifyServer = true) => {
+    const v = voiceRef.current;
+    voiceRef.current = null;
+    if (v) {
+      if (notifyServer && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'voice_stream', action: 'stop' }));
       }
-      setIsRecording(false);
+      v.node.port.onmessage = null;
+      try { v.node.disconnect(); v.sink.disconnect(); } catch (e) { /* already disconnected */ }
+      v.stream.getTracks().forEach((track) => track.stop());
+      v.ctx.close().catch(() => {});
+    }
+    setIsRecording(false);
+    setIsSpeaking(false);
+    setLivePartial('');
+  };
+
+  const startVoiceStream = async () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      alert('Not connected to the agent yet — try again in a moment.');
       return;
     }
-
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      const ctx = new AudioContext({ sampleRate: 16000 }); // if the browser ignores this, the worklet resamples
+      const url = URL.createObjectURL(new Blob([PCM_WORKLET_SOURCE], { type: 'application/javascript' }));
+      await ctx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      const source = ctx.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(ctx, 'pcm-capture');
+      const sink = ctx.createGain(); // muted sink keeps the worklet pulled without playing the mic back
+      sink.gain.value = 0;
+      source.connect(node);
+      node.connect(sink);
+      sink.connect(ctx.destination);
+
+      node.port.onmessage = (e) => {
+        const ws = wsRef.current;
+        // Drop frames rather than queue unboundedly if the socket backs up (stale audio is useless).
+        if (ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 1_000_000) ws.send(e.data);
       };
 
-      mediaRecorder.onstop = async () => {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Math.random().toString(),
-            role: 'user',
-            text: '🎤 Transcribing…',
-            pendingVoice: true,
-          }
-        ]);
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(arrayBuffer);
-          addTrace('audio', `Streamed audio (${Math.round(arrayBuffer.byteLength / 1024)} KB) to faster-whisper`);
-        }
-        stream.getTracks().forEach((track) => track.stop());
-      };
-
-      mediaRecorder.start();
+      voiceRef.current = { stream, ctx, node, sink };
+      wsRef.current.send(JSON.stringify({ type: 'voice_stream', action: 'start' }));
       setIsRecording(true);
     } catch (err) {
       alert('Microphone error: ' + err.message);
     }
   };
+
+  const toggleRecording = () => (isRecording ? stopVoiceStream() : startVoiceStream());
 
   // True when user is on home screen (no messages yet)
   const isHomeScreen = messages.length === 0;
@@ -785,7 +877,7 @@ export default function App() {
                   <button 
                     onClick={toggleRecording} 
                     className={`hover:text-white transition ${isRecording ? 'text-rose-400 animate-pulse' : ''}`}
-                    title={isRecording ? 'Stop Recording' : 'Voice Input (faster-whisper)'}
+                    title={isRecording ? 'Stop listening' : 'Hands-free voice (speak any time to interrupt)'}
                   >
                     <Mic className="w-4 h-4" />
                   </button>
@@ -848,14 +940,27 @@ export default function App() {
               <div className="p-4 shrink-0 max-w-2xl mx-auto w-full">
                 <div className="bg-[#181a20]/95 backdrop-blur-md border border-white/10 rounded-2xl p-3 shadow-2xl flex flex-col gap-2.5 transition focus-within:border-slate-500">
                   
+                  {/* Hands-free voice status */}
+                  {isRecording && (
+                    <div className="px-2.5 py-1 bg-sky-500/10 border border-sky-500/20 rounded-lg flex items-center justify-between text-[11px] text-sky-300 font-mono">
+                      <span className="flex items-center gap-1.5">
+                        <Mic className={`w-3.5 h-3.5 ${isSpeaking ? 'text-rose-400 animate-pulse' : 'text-sky-400'}`} />
+                        <span>{isSpeaking ? 'Hearing you…' : 'Listening — speak any time to interrupt'}</span>
+                      </span>
+                      <button onClick={() => stopVoiceStream()} className="text-[10px] text-sky-400/80 hover:text-white transition">
+                        Stop
+                      </button>
+                    </div>
+                  )}
+
                   {/* Real-time Keystroke Detection Pill */}
                   {isTyping && spawnedBots.some(b => b.status === 'working') && (
                     <div className="px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-between text-[11px] text-amber-300 font-mono">
                       <span className="flex items-center gap-1.5">
                         <Eye className="w-3.5 h-3.5 text-amber-400 animate-bounce" />
-                        <span>Agents reading draft: "{inputText.slice(0, 26)}{inputText.length > 26 ? '...' : ''}"</span>
+                        <span>{isSpeaking ? 'Agents hearing you' : 'Agents reading draft'}: "{draftText.slice(0, 26)}{draftText.length > 26 ? '...' : ''}"</span>
                       </span>
-                      <span className="text-[10px] text-amber-400/80">Press Enter to adapt</span>
+                      <span className="text-[10px] text-amber-400/80">{isSpeaking ? 'Finish speaking to adapt' : 'Press Enter to adapt'}</span>
                     </div>
                   )}
 
@@ -874,7 +979,7 @@ export default function App() {
                       <button 
                         onClick={toggleRecording} 
                         className={`hover:text-white transition ${isRecording ? 'text-rose-400 animate-pulse' : ''}`}
-                        title="Mic"
+                        title={isRecording ? 'Stop listening' : 'Hands-free voice (speak any time to interrupt)'}
                       >
                         <Mic className="w-4 h-4" />
                       </button>
@@ -1071,7 +1176,7 @@ export default function App() {
                                       : 'text-slate-400 font-sans'
                                   }`}>
                                     {isWorking && isTyping 
-                                      ? `👀 Noticing typing: "${inputText.slice(0, 36)}${inputText.length > 36 ? '...' : ''}"` 
+                                      ? `👀 ${isSpeaking ? 'Hearing you' : 'Noticing typing'}: "${draftText.slice(0, 36)}${draftText.length > 36 ? '...' : ''}"` 
                                       : bot.thought}
                                   </p>
 
