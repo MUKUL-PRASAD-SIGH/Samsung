@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
 
 from agent.schemas.events import (
     BaseEvent,
@@ -31,6 +32,7 @@ from agent.schemas.actions import (
     StateSnapshotAction,
     GraphUpdateAction,
     TranscriptAction,
+    VoiceActivityAction,
     GraphNodePayload,
     GraphEdgePayload,
 )
@@ -43,8 +45,27 @@ from agent.fast_path.intent_classifier import IntentClassifier
 from agent.slow_path.planner import Planner
 from agent.llm_client import MockLLMBackend, LLMBackend, get_backend, LLMConfig
 from agent.multimodal.asr import ASRProcessor
+from agent.multimodal.streaming import (
+    PartialDue,
+    SpeechStart,
+    UtteranceEnd,
+    VoiceStream,
+    make_vad,
+)
 
 logger = logging.getLogger("agent.coordinator")
+
+
+@dataclass
+class _VoiceRuntime:
+    """Per-session state for continuous voice streaming."""
+
+    stream: VoiceStream
+    partial_task: Optional[asyncio.Task] = None
+    final_tail: Optional[asyncio.Task] = None  # serializes finals so utterances reach the planner in order
+    barge_in_fired: Set[str] = field(default_factory=set)
+    finalized: Set[str] = field(default_factory=set)
+    tasks: Set[asyncio.Task] = field(default_factory=set)
 
 
 class AgentCoordinator:
@@ -74,6 +95,7 @@ class AgentCoordinator:
         self._debounce_tasks: Dict[str, asyncio.Task] = {}
         self._pending_events: Dict[str, List[UserTextEvent]] = {}
         self._audio_buffers: Dict[str, bytearray] = {}
+        self._voice: Dict[str, _VoiceRuntime] = {}
         self._running = False
         self._loop_task: Optional[asyncio.Task] = None
 
@@ -111,6 +133,10 @@ class AgentCoordinator:
         for session in self.sessions.values():
             session.bump_epoch(reason="system_shutdown")
 
+        for runtime in self._voice.values():
+            for task in list(runtime.tasks):
+                task.cancel()
+        self._voice.clear()
         self._audio_buffers.clear()
 
     async def post_event(self, event: BaseEvent) -> None:
@@ -205,6 +231,10 @@ class AgentCoordinator:
 
     async def _handle_audio_chunk(self, session: SessionState, event: AudioChunkEvent) -> None:
         """Process raw audio chunk: buffer, transcribe via ASR, and feed into intent loop."""
+        if event.streaming or event.stream_control:
+            await self._handle_voice_stream(session, event)
+            return
+
         if not event.audio_bytes:
             return
 
@@ -252,6 +282,138 @@ class AgentCoordinator:
                 else:
                     await self._handle_user_text(session, text_event)
 
+    # ------------------------------------------------------------------ continuous voice streaming
+    def _spawn_voice_task(self, runtime: _VoiceRuntime, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        runtime.tasks.add(task)
+        task.add_done_callback(runtime.tasks.discard)
+        return task
+
+    async def _handle_voice_stream(self, session: SessionState, event: AudioChunkEvent) -> None:
+        """Streaming voice input: VAD -> utterance segmentation -> partial/final transcription.
+
+        Transcription always runs in background tasks; this handler only does the cheap per-frame
+        VAD work, so the coordinator's event loop is never stalled by Whisper (a stalled loop would
+        delay exactly the interrupts and tool results this feature exists to react to).
+        """
+        sid = session.session_id
+        runtime = self._voice.get(sid)
+
+        if event.stream_control == "start":
+            if runtime is None:
+                runtime = _VoiceRuntime(stream=VoiceStream(vad=make_vad()))
+                self._voice[sid] = runtime
+            else:
+                runtime.stream.reset()
+            await self.emit_action(VoiceActivityAction(session_id=sid, epoch=session.epoch, state="listening"))
+            return
+
+        if runtime is None:
+            return  # audio before/without a "start" control message is ignored
+
+        if event.stream_control == "stop":
+            await self._dispatch_voice_events(session, runtime, runtime.stream.flush())
+            self._voice.pop(sid, None)  # in-flight finals keep running via their own task references
+            await self.emit_action(VoiceActivityAction(session_id=sid, epoch=session.epoch, state="idle"))
+            return
+
+        if event.audio_bytes:
+            await self._dispatch_voice_events(session, runtime, runtime.stream.feed(event.audio_bytes))
+
+    async def _dispatch_voice_events(self, session: SessionState, runtime: _VoiceRuntime, events: List[Any]) -> None:
+        sid = session.session_id
+        for ev in events:
+            if isinstance(ev, SpeechStart):
+                await self.emit_action(
+                    VoiceActivityAction(session_id=sid, epoch=session.epoch, state="speech_start", utterance_id=ev.utterance_id)
+                )
+            elif isinstance(ev, PartialDue):
+                # One partial in flight at a time; if Whisper is still busy, skip this tick.
+                if runtime.partial_task is None or runtime.partial_task.done():
+                    runtime.partial_task = self._spawn_voice_task(runtime, self._voice_partial(session, runtime, ev))
+            elif isinstance(ev, UtteranceEnd):
+                runtime.finalized.add(ev.utterance_id)  # any partial still in flight for it is now stale
+                await self.emit_action(
+                    VoiceActivityAction(
+                        session_id=sid, epoch=session.epoch, state="speech_end",
+                        utterance_id=ev.utterance_id, detail=ev.reason,
+                    )
+                )
+                runtime.final_tail = self._spawn_voice_task(
+                    runtime, self._voice_final(session, runtime, ev, runtime.final_tail)
+                )
+
+    async def _voice_partial(self, session: SessionState, runtime: _VoiceRuntime, ev: PartialDue) -> None:
+        started = time.perf_counter()
+        text = await asyncio.to_thread(self.asr_processor.transcribe_audio_bytes, ev.pcm, "pcm_16khz")
+        if not text or ev.utterance_id in runtime.finalized:
+            return
+        await self.emit_action(
+            TranscriptAction(
+                session_id=session.session_id,
+                epoch=session.epoch,
+                text=text,
+                asr_model=getattr(self.asr_processor, "model_size", None),
+                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+                is_partial=True,
+                utterance_id=ev.utterance_id,
+            )
+        )
+        await self._maybe_voice_barge_in(session, runtime, ev.utterance_id, text)
+
+    async def _maybe_voice_barge_in(self, session: SessionState, runtime: _VoiceRuntime, utterance_id: str, text: str) -> None:
+        """Interrupt in-flight work as soon as a partial transcript already reads as a correction.
+
+        Only worth doing (and only safe to do) when something is actually running; otherwise the
+        final transcript goes through the normal path, which handles epoch bumps itself.
+        """
+        if utterance_id in runtime.barge_in_fired:
+            return
+        if not any(c.status in ("pending", "running") for c in session.in_flight_calls.values()):
+            return
+        if not self.intent_classifier.classify_text(text)["is_interrupt"]:
+            return
+
+        runtime.barge_in_fired.add(utterance_id)
+        cancellations = session.bump_epoch(reason=f"voice_barge_in: {text}")
+        for cancel_action in cancellations:
+            await self.emit_action(cancel_action)
+        await self.emit_action(
+            VoiceActivityAction(
+                session_id=session.session_id, epoch=session.epoch, state="barge_in",
+                utterance_id=utterance_id, detail=text,
+            )
+        )
+        await self.emit_action(session.get_snapshot())
+
+    async def _voice_final(
+        self, session: SessionState, runtime: _VoiceRuntime, ev: UtteranceEnd, previous: Optional[asyncio.Task]
+    ) -> None:
+        if previous is not None:
+            try:
+                await previous  # keep utterances in order
+            except BaseException:  # noqa: BLE001 - an earlier utterance failing must not block this one
+                pass
+        started = time.perf_counter()
+        text = await asyncio.to_thread(self.asr_processor.transcribe_audio_bytes, ev.pcm, "pcm_16khz")
+        await self.emit_action(
+            TranscriptAction(
+                session_id=session.session_id,
+                epoch=session.epoch,
+                text=text or "",
+                asr_model=getattr(self.asr_processor, "model_size", None),
+                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+                is_partial=False,
+                utterance_id=ev.utterance_id,
+            )
+        )
+        handled = ev.utterance_id in runtime.barge_in_fired
+        runtime.barge_in_fired.discard(ev.utterance_id)
+        runtime.finalized.discard(ev.utterance_id)
+        if text:
+            logger.info("Voice utterance %s (%s): '%s'", ev.utterance_id, ev.reason, text)
+            await self.post_event(UserTextEvent(session_id=session.session_id, text=text, barge_in_handled=handled))
+
     async def _queue_debounced_user_text(self, session: SessionState, event: UserTextEvent) -> None:
         """Buffer and coalesce rapid-fire user corrections (§7.5)."""
         sid = session.session_id
@@ -292,11 +454,12 @@ class AgentCoordinator:
 
         # Tier 1 Interrupt / Intent-Shift Detection (§3, §7.2)
         classification = self.intent_classifier.classify_text(event.text)
-        is_interrupt = classification["is_interrupt"]
+        is_interrupt = classification["is_interrupt"] or event.barge_in_handled
         needs_clarification = classification["needs_clarification"]
 
-        # If high-confidence interrupt, bump epoch and cancel stale in-flight calls immediately
-        if is_interrupt:
+        # If high-confidence interrupt, bump epoch and cancel stale in-flight calls immediately.
+        # A voice barge-in may already have done this from a partial transcript -- don't bump twice.
+        if is_interrupt and not event.barge_in_handled:
             cancellations = session.bump_epoch(reason=f"user_correction: {event.text}")
             for cancel_action in cancellations:
                 await self.emit_action(cancel_action)

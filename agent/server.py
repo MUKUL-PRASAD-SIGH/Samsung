@@ -69,19 +69,35 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     forwarder_task = asyncio.create_task(forward_actions())
 
+    # True between {"type": "voice_stream", "action": "start"} and "stop": binary frames are then
+    # continuous raw 16 kHz mono PCM16 (hands-free voice), not one complete WebM recording.
+    voice_streaming = False
+
     try:
         while True:
             message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
             if "bytes" in message and message["bytes"]:
-                # Binary audio chunk from WebSocket
-                await coordinator.post_event(
-                    AudioChunkEvent(
-                        session_id=session_id,
-                        audio_bytes=message["bytes"],
-                        format="webm",
-                        is_final=True,
+                if voice_streaming:
+                    await coordinator.post_event(
+                        AudioChunkEvent(
+                            session_id=session_id,
+                            audio_bytes=message["bytes"],
+                            format="pcm_16khz",
+                            streaming=True,
+                        )
                     )
-                )
+                else:
+                    # Push-to-talk: one complete WebM recording
+                    await coordinator.post_event(
+                        AudioChunkEvent(
+                            session_id=session_id,
+                            audio_bytes=message["bytes"],
+                            format="webm",
+                            is_final=True,
+                        )
+                    )
             elif "text" in message and message["text"]:
                 data = json.loads(message["text"])
                 event_type = data.get("type", "user_text")
@@ -93,6 +109,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             reason=data.get("reason", "ui_barge_in"),
                         )
                     )
+                elif event_type == "voice_stream":
+                    action = data.get("action")
+                    if action in ("start", "stop"):
+                        voice_streaming = action == "start"
+                        await coordinator.post_event(
+                            AudioChunkEvent(
+                                session_id=session_id,
+                                streaming=True,
+                                stream_control=action,
+                                format="pcm_16khz",
+                            )
+                        )
                 elif event_type == "audio_chunk":
                     b64_audio = data.get("audio_base64", "")
                     raw_audio = base64.b64decode(b64_audio) if b64_audio else None
@@ -114,6 +142,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for session %s", session_id)
     finally:
+        if voice_streaming:
+            # Client vanished mid-stream: close out any utterance in progress and free the runtime.
+            await coordinator.post_event(
+                AudioChunkEvent(session_id=session_id, streaming=True, stream_control="stop", format="pcm_16khz")
+            )
         forwarder_task.cancel()
 
 

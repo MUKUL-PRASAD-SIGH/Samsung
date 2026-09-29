@@ -37,6 +37,9 @@ class UserTextEvent(BaseEvent):
     event_type: EventType = EventType.USER_TEXT
     text: str
     is_partial: bool = False  # e.g., interim streaming ASR chunk
+    # True when a voice barge-in already interrupted in-flight work for this utterance (from a partial
+    # transcript), so the coordinator must not bump the epoch a second time for the final text.
+    barge_in_handled: bool = False
 
 
 class AudioChunkEvent(BaseEvent):
@@ -46,6 +49,9 @@ class AudioChunkEvent(BaseEvent):
     duration_ms: float = 0.0
     sample_rate: int = 16000
     is_final: bool = False
+    # Continuous voice streaming: raw 16 kHz mono PCM16 frames, with "start"/"stop" control events.
+    streaming: bool = False
+    stream_control: Optional[str] = None  # "start" | "stop"
 
 
 class VideoFrameEvent(BaseEvent):

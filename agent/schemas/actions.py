@@ -27,6 +27,7 @@ class ActionType(str, Enum):
     AGENT_STEP = "agent_step"
     GRAPH_SNAPSHOT = "graph_update"
     TRANSCRIPT = "transcript"
+    VOICE_ACTIVITY = "voice_activity"
 
 
 class BaseAction(BaseModel):
@@ -105,6 +106,18 @@ class TranscriptAction(BaseAction):
     text: str
     asr_model: Optional[str] = None
     latency_ms: Optional[float] = None
+    # Streaming voice: partial transcripts refine one utterance until a final one closes it.
+    is_partial: bool = False
+    utterance_id: Optional[str] = None
+
+
+class VoiceActivityAction(BaseAction):
+    """Server-side voice state for the UI: listening / speech_start / speech_end / barge_in / idle."""
+
+    action_type: ActionType = ActionType.VOICE_ACTIVITY
+    state: str
+    utterance_id: Optional[str] = None
+    detail: Optional[str] = None
 
 
 class GraphNodePayload(BaseModel):

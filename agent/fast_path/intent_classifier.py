@@ -11,6 +11,7 @@ Uses embedding similarity (all-MiniLM-L6-v2) for CPU-speed (< 5ms) classificatio
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("agent.intent_classifier")
@@ -41,6 +42,11 @@ CONTINUATION_ANCHORS = [
     "two passengers",
     "economy class",
 ]
+
+
+_INTERRUPT_KEYWORDS = re.compile(
+    r"\b(?:no|stop|wait|cancel|actually|scratch that|instead|hold on)\b"
+)
 
 
 class IntentClassifier:
@@ -123,8 +129,9 @@ class IntentClassifier:
             }
 
         # Fallback keyword-based heuristic
-        interrupt_prefixes = ("no", "stop", "wait", "cancel", "actually", "scratch that", "instead")
-        matched = any(text_clean.startswith(p) or f" {p}" in text_clean for p in interrupt_prefixes)
+        # Whole-word match: the old substring check (`" no" in text`) fired on "now", "north",
+        # "nothing"... which would cancel in-flight work on ordinary sentences like "flights now".
+        matched = _INTERRUPT_KEYWORDS.search(text_clean) is not None
         
         score = 0.85 if matched else 0.10
         return {
