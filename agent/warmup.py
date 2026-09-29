@@ -6,6 +6,7 @@ Executes during the competition 300s setup/warm-up hook before the
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Optional
@@ -23,6 +24,7 @@ async def run_warmup_hook(
     llm_backend: Optional[LLMBackend] = None,
     warm_asr: bool = True,
     warm_vision: bool = False,
+    asr_processor: Optional[ASRProcessor] = None,
 ) -> float:
     """Pre-warm models, CUDA contexts, and KV caches (§7.7).
     
@@ -56,8 +58,10 @@ async def run_warmup_hook(
 
     # 4. Warm-up ASR if requested
     if warm_asr:
-        asr = ASRProcessor()
-        asr.warmup()
+        # Warm the caller's own instance (e.g. the coordinator's) so the loaded model is
+        # the one actually used at runtime; a throwaway instance would warm nothing.
+        asr = asr_processor or ASRProcessor()
+        await asyncio.to_thread(asr.warmup)
 
     # 5. Warm-up Vision if requested
     if warm_vision:

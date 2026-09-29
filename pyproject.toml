@@ -9,6 +9,10 @@ dependencies = [
     "jsonschema>=4.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
+    "python-dotenv>=1.0",
+    "numpy>=1.24",
+    "faster-whisper>=1.0",
+    "av>=11.0",
 ]
 
 [build-system]

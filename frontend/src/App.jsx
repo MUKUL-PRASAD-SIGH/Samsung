@@ -199,7 +199,18 @@ export default function App() {
 
   // Settings State
   const [selectedModel, setSelectedModel] = useState('openai/gpt-oss-120b');
-  const [asrEngine] = useState('faster-whisper (small.en)');
+  const [asrEngine, setAsrEngine] = useState('faster-whisper');
+  useEffect(() => {
+    fetch('/health')
+      .then((r) => r.json())
+      .then((h) => {
+        if (h.asr) {
+          const state = h.asr.load_failed ? 'unavailable' : h.asr.loaded ? 'ready' : 'loading…';
+          setAsrEngine(`faster-whisper (${h.asr.model}, ${h.asr.device}/${h.asr.compute_type}) — ${state}`);
+        }
+      })
+      .catch(() => {});
+  }, [connected]);
 
   // Chats list matching the screenshots
   const [chats, setChats] = useState([
@@ -413,6 +424,22 @@ export default function App() {
         setArtifactLoading(false);
       }
 
+    } else if (action.action_type === 'transcript') {
+      const heard = (action.text || '').trim();
+      setMessages((prev) => {
+        // Resolve the oldest still-pending voice placeholder with what Whisper heard.
+        const idx = prev.findIndex((m) => m.pendingVoice);
+        if (idx === -1) return prev;
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          pendingVoice: false,
+          text: heard ? `🎤 ${heard}` : '🎤 (no speech detected — try again)',
+        };
+        return next;
+      });
+      addTrace('audio', heard ? `Whisper (${action.asr_model}, ${action.latency_ms}ms): "${heard}"` : 'Whisper: no speech detected', action);
+
     } else if (action.action_type === 'graph_update') {
       if (action.op === 'full') {
         setGraphNodes(action.nodes || []);
@@ -546,7 +573,8 @@ export default function App() {
           {
             id: Math.random().toString(),
             role: 'user',
-            text: '🎤 [Voice Audio Sent to Whisper ASR]',
+            text: '🎤 Transcribing…',
+            pendingVoice: true,
           }
         ]);
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });

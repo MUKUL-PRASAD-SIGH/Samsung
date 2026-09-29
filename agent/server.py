@@ -30,7 +30,11 @@ coordinator = AgentCoordinator()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await coordinator.start()
+    # Load + warm the Whisper model in the background so the first voice message doesn't
+    # pay the cold-start cost, without delaying server startup (/health reports progress).
+    asr_warmup_task = asyncio.create_task(asyncio.to_thread(coordinator.asr_processor.warmup))
     yield
+    asr_warmup_task.cancel()
     await coordinator.stop()
 
 
@@ -39,7 +43,11 @@ app = FastAPI(title="Interruptible Real-Time Agent", version="1.0.0", lifespan=l
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "sessions": len(coordinator.sessions)}
+    return {
+        "status": "ok",
+        "sessions": len(coordinator.sessions),
+        "asr": coordinator.asr_processor.info(),
+    }
 
 
 @app.websocket("/ws/{session_id}")

@@ -26,6 +26,7 @@ class ActionType(str, Enum):
     CLARIFICATION = "clarification"
     AGENT_STEP = "agent_step"
     GRAPH_SNAPSHOT = "graph_update"
+    TRANSCRIPT = "transcript"
 
 
 class BaseAction(BaseModel):
@@ -95,6 +96,15 @@ class AgentStepAction(BaseAction):
     thought: str
     status: str = "working"  # "working", "completed", "cancelled"
     artifact: Optional[Dict[str, Any]] = None
+
+
+class TranscriptAction(BaseAction):
+    """What the ASR heard for a submitted voice recording (empty text = no speech detected)."""
+
+    action_type: ActionType = ActionType.TRANSCRIPT
+    text: str
+    asr_model: Optional[str] = None
+    latency_ms: Optional[float] = None
 
 
 class GraphNodePayload(BaseModel):

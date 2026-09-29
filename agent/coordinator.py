@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from agent.schemas.events import (
@@ -29,6 +30,7 @@ from agent.schemas.actions import (
     ToolCancelAction,
     StateSnapshotAction,
     GraphUpdateAction,
+    TranscriptAction,
     GraphNodePayload,
     GraphEdgePayload,
 )
@@ -218,10 +220,23 @@ class AgentCoordinator:
             self._audio_buffers[sid].clear()
 
             # Run transcription off the event loop thread to prevent blocking
+            asr_started = time.perf_counter()
             transcribed_text = await asyncio.to_thread(
                 self.asr_processor.transcribe_audio_bytes,
                 raw_bytes,
                 event.format,
+            )
+
+            # Tell the client what was heard (or that nothing was) so it can show the
+            # transcript instead of an opaque "audio sent" placeholder.
+            await self.emit_action(
+                TranscriptAction(
+                    session_id=sid,
+                    epoch=session.epoch,
+                    text=transcribed_text or "",
+                    asr_model=getattr(self.asr_processor, "model_size", None),
+                    latency_ms=round((time.perf_counter() - asr_started) * 1000, 1),
+                )
             )
 
             if transcribed_text:
