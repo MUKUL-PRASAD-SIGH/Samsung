@@ -34,7 +34,7 @@ TRACE_RECORD_SCHEMA = {
     "required": ["schema_version", "record_type", "session_id", "timestamp", "payload"],
     "properties": {
         "schema_version": {"type": "integer", "minimum": 1},
-        "record_type": {"enum": ["event", "action"]},
+        "record_type": {"enum": ["event", "action", "classification"]},
         "event_type": {"type": "string"},
         "action_type": {"type": "string"},
         "session_id": {"type": "string", "minLength": 1},
@@ -109,6 +109,20 @@ class TraceLogger:
             "epoch": action.epoch,
             "timestamp": action.timestamp,
             "payload": action.model_dump(),
+        }
+        if not self._validate_schema(record):
+            return None
+        self._append_record(record)
+        return record
+
+    def log_classification(self, session_id: str, text: str, result: Dict[str, Any], timestamp: float) -> Optional[Dict[str, Any]]:
+        """Record a Tier-1 interrupt decision with its raw scores/features (§7.2), so a threshold is auditable."""
+        record = {
+            "schema_version": TRACE_SCHEMA_VERSION,
+            "record_type": "classification",
+            "session_id": session_id,
+            "timestamp": timestamp,
+            "payload": {"text": text, **result},
         }
         if not self._validate_schema(record):
             return None

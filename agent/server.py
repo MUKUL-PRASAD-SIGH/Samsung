@@ -67,6 +67,8 @@ async def lifespan(app: FastAPI):
     # Load + warm the Whisper model in the background so the first voice message doesn't
     # pay the cold-start cost, without delaying server startup (/health reports progress).
     asr_warmup_task = asyncio.create_task(asyncio.to_thread(coordinator.asr_processor.warmup))
+    # Load MiniLM (when enabled) now, not on the first user sentence.
+    asyncio.create_task(asyncio.to_thread(coordinator.intent_classifier.classify_text, "warmup text ping"))
     yield
     asr_warmup_task.cancel()
     dispatcher.cancel()

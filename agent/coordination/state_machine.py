@@ -54,6 +54,8 @@ class SessionState:
         self.in_flight_calls: Dict[str, InFlightCall] = {}
         self.idempotency_store: IdempotencyStore = IdempotencyStore()
         self.last_activity: float = clock.now()
+        # An ambiguous (mid-band) possible correction waiting for the user's yes/no (spec §7.2).
+        self.pending_clarification: Optional[str] = None
 
         # History ring buffer for rollback (§7.4)
         self.max_history: int = max_history

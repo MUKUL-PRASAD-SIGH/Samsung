@@ -1,0 +1,38 @@
+{
+  "features": [
+    "interrupt_similarity",
+    "continuation_similarity",
+    "strong_keyword",
+    "opening_keyword",
+    "repair_word",
+    "benign_no",
+    "strong_in_long",
+    "bias"
+  ],
+  "weights": [
+    2.1941,
+    -1.0081,
+    1.7162,
+    1.8266,
+    1.9393,
+    -0.502,
+    -0.5744,
+    -1.5339
+  ],
+  "high": 0.6,
+  "mid": 0.25,
+  "fit": {
+    "dev_n": 90,
+    "test_n": 92,
+    "test_metrics": {
+      "act_precision": 1.0,
+      "act_recall": 0.949,
+      "clarify_n": 6,
+      "clarify_precision": 0.333,
+      "handled_recall": 1.0,
+      "false_act": 0,
+      "false_clarify": 4,
+      "accuracy_at_high": 0.978
+    }
+  }
+}

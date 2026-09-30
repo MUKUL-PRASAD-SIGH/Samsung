@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from agent import clock
 import uuid
@@ -32,6 +33,7 @@ from agent.schemas.actions import (
     BaseAction,
     FillerAction,
     SpokenResponseAction,
+    ClarificationAction,
     ToolCallAction,
     ToolCancelAction,
     StateSnapshotAction,
@@ -60,6 +62,18 @@ from agent.multimodal.streaming import (
 )
 
 logger = logging.getLogger("agent.coordinator")
+
+_YES = re.compile(r"^\s*(?:yes|yeah|yep|yup|sure|correct|right|please do|do it|go ahead|change it|ok(?:ay)?)\b")
+_NO = re.compile(r"^\s*(?:no|nope|nah|don'?t|keep|leave it|carry on|continue|never ?mind)\b")
+
+
+def _yes_no(text: str) -> Optional[str]:
+    t = text.strip().lower()
+    if _YES.match(t):
+        return "yes"
+    if _NO.match(t):
+        return "no"
+    return None
 
 
 FRAMES_PER_SESSION = 3      # ring buffer: only the newest frames matter, and nothing is analyzed until asked
@@ -113,7 +127,9 @@ class AgentCoordinator:
         self.enable_debounce = enable_debounce
         self.debounce_window_s = debounce_window_s
 
-        self.intent_classifier = intent_classifier or IntentClassifier(use_embeddings=False)
+        self.intent_classifier = intent_classifier or IntentClassifier(
+            use_embeddings=os.getenv("INTENT_EMBEDDINGS", "0") == "1"
+        )
         self.llm_backend = llm_backend or get_backend(LLMConfig())
         self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
         self.asr_processor = asr_processor or ASRProcessor()
@@ -593,9 +609,34 @@ class AgentCoordinator:
             session.scratchpad.append_utterance_chunk(event.text)
 
         # Tier 1 Interrupt / Intent-Shift Detection (§3, §7.2)
+        has_work = any(c.status in ("pending", "running") for c in session.in_flight_calls.values())
+
+        # A previous mid-band utterance asked "did you mean to change that?": this turn is the answer.
+        forced_interrupt = False
+        if session.pending_clarification is not None:
+            verdict = _yes_no(event.text)
+            original, session.pending_clarification = session.pending_clarification, None
+            if verdict == "yes":
+                event = event.model_copy(update={"text": original})
+                forced_interrupt = True
+            elif verdict == "no":
+                await self.emit_action(SpokenResponseAction(
+                    session_id=session.session_id, epoch=session.epoch, text="Okay, I'll carry on as before."))
+                return
+            # anything else: the user moved on; handle this text normally
+
         classification = self.intent_classifier.classify_text(event.text)
-        is_interrupt = classification["is_interrupt"] or event.barge_in_handled
-        needs_clarification = classification["needs_clarification"]
+        self.trace_logger.log_classification(session.session_id, event.text, classification, clock.now())
+        is_interrupt = classification["is_interrupt"] or event.barge_in_handled or forced_interrupt
+
+        # Mid-band (§7.2): might be a correction, might not. Don't thrash the epoch; ask. Only worth asking when
+        # something is actually running -- otherwise there is nothing to interrupt and it is an ordinary request.
+        if classification["needs_clarification"] and has_work and not is_interrupt:
+            session.pending_clarification = event.text
+            await self.emit_action(ClarificationAction(
+                session_id=session.session_id, epoch=session.epoch,
+                question=f"Do you want me to change what I'm working on because of \"{event.text}\"? (yes / no)"))
+            return
 
         # If high-confidence interrupt, bump epoch and cancel stale in-flight calls immediately.
         # A voice barge-in may already have done this from a partial transcript -- don't bump twice.

@@ -25,6 +25,7 @@ async def run_warmup_hook(
     warm_asr: bool = True,
     warm_vision: bool = False,
     asr_processor: Optional[ASRProcessor] = None,
+    classifier: Optional[IntentClassifier] = None,
 ) -> float:
     """Pre-warm models, CUDA contexts, and KV caches (§7.7).
     
@@ -36,8 +37,9 @@ async def run_warmup_hook(
 
     # 1. Warm-up Tier 1 Intent Classifier (embeddings)
     try:
-        classifier = IntentClassifier(use_embeddings=True)
-        classifier.classify_text("warmup text ping")
+        # Warm the caller's own instance (the coordinator's) so the loaded model is the one used at runtime.
+        classifier = classifier or IntentClassifier(use_embeddings=True)
+        await asyncio.to_thread(classifier.classify_text("warmup text ping")
         logger.info("Tier 1 Intent Classifier pre-warmed.")
     except Exception as e:
         logger.warning("Tier 1 warm-up notice: %s", e)

@@ -10,37 +10,34 @@ Uses embedding similarity (all-MiniLM-L6-v2) for CPU-speed (< 5ms) classificatio
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("agent.intent_classifier")
 
-# Anchor phrases representing clear interruption / correction signals
+# Anchor phrases representing clear interruption / correction signals. Deliberately DISJOINT from the labeled
+# calibration set (intent_dataset.py) so measured accuracy is not memorisation.
 INTERRUPT_ANCHORS = [
-    "stop",
-    "wait",
-    "cancel that",
-    "no wait stop",
-    "actually no",
-    "change that to",
-    "scratch that",
-    "don't do that",
-    "hold on a second",
-    "instead of that",
-    "no I said",
-    "that's wrong",
+    "stop", "wait", "cancel that", "no wait stop", "actually no", "change that to", "scratch that",
+    "don't do that", "hold on a second", "instead of that", "no I said", "that's wrong",
+    "no that's not right", "hang on, I want something else", "sorry, I got that wrong", "stop what you're doing",
+    "please cancel the request", "I take that back", "no, use a different one", "that's the wrong one",
+    "wait, let me fix that", "belay that", "oops, not that", "no, change the city", "actually, switch it to",
+    "forget what I just said", "halt", "pause, that's incorrect", "hold your horses", "that isn't what I wanted",
+    "let me correct myself", "no I want the other date",
 ]
 
-# Anchor phrases representing standard continuations
+# Anchor phrases representing standard continuations / fresh requests
 CONTINUATION_ANCHORS = [
-    "yes please",
-    "and also add",
-    "for tomorrow",
-    "morning flight",
-    "direct flight only",
-    "two passengers",
-    "economy class",
+    "yes please", "and also add", "for tomorrow", "morning flight", "direct flight only", "two passengers",
+    "economy class", "find me a flight", "what's the weather like", "book a hotel room", "thanks a lot",
+    "tell me more", "how much does it cost", "show me the options", "sounds good to me", "hello there",
+    "search for restaurants nearby", "add a window seat", "is it refundable", "what can you do",
+    "with free breakfast", "under a certain budget", "okay go ahead", "please continue",
 ]
 
 
@@ -48,18 +45,87 @@ _INTERRUPT_KEYWORDS = re.compile(
     r"\b(?:no|stop|wait|cancel|actually|scratch that|instead|hold on)\b"
 )
 
+# Lexical features for the embedding mode. MiniLM alone scores "no wait, make it Mumbai" only ~0.35 against the
+# anchors (it is about the new value, not the retraction), so cheap lexical cues are combined with the two
+# similarities in a small logistic model fit on the labeled set (see calibrate.py; weights in intent_weights.json).
+# STRONG words retract work; WEAK ones only count when they open the utterance; REPAIR words mark a correction.
+_STRONG = re.compile(r"\b(?:stop|cancel|abort|scratch that|hold on|never ?mind|forget it|hang on)\b")
+_WEAK_OPENING = re.compile(r"^(?:no|nope|actually|wait|sorry|correction|oh wait|hey)\b")
+_REPAIR = re.compile(r"\b(?:not|instead|meant|change|switch|make it|should be|wrong|other|different|correction|undo|back)\b")
+
+# "no problem" / "no worries" / "no thanks" open with "no" but are pleasantries, not retractions.
+_BENIGN_NO = re.compile(r"^no\s+(?:problem|worries|worry|thanks|thank you|rush|need|hurry)\b")
+
+FEATURES = ("interrupt_similarity", "continuation_similarity", "strong_keyword", "opening_keyword", "repair_word",
+            "benign_no", "strong_in_long", "bias")
+_WEIGHTS_PATH = Path(__file__).with_name("intent_weights.json")
+
+
+_LONG_UTTERANCE_WORDS = 6
+
+
+def lexical_features(text: str) -> Tuple[float, float, float, float, float]:
+    strong = bool(_STRONG.search(text))
+    return (float(strong), float(bool(_WEAK_OPENING.match(text))), float(bool(_REPAIR.search(text))),
+            float(bool(_BENIGN_NO.match(text))),
+            # Retractions are short; "cancel" buried in a long sentence is usually an instruction ("cancel my
+            # booking for Friday..."), i.e. a tool request rather than an interruption of the work in flight.
+            float(strong and len(text.split()) >= _LONG_UTTERANCE_WORDS))
+
+
+def feature_vector(interrupt_sim: float, continuation_sim: float, text: str) -> List[float]:
+    return [interrupt_sim, continuation_sim, *lexical_features(text), 1.0]
+
+
+def interrupt_probability(vector: List[float], weights: List[float]) -> float:
+    z = sum(w * x for w, x in zip(weights, vector))
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def load_calibration() -> Dict[str, Any]:
+    with open(_WEIGHTS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+# A short utterance that is essentially just a stop word is a stop, whatever MiniLM thinks of "abort"/"forget it".
+_BARE_STOP_MAX_WORDS = 3
+
+
+def is_bare_stop(text: str) -> bool:
+    return bool(_STRONG.search(text)) and len(text.split()) <= _BARE_STOP_MAX_WORDS
+
+
+def apply_rules(probability: float, text: str) -> Tuple[float, Optional[str]]:
+    """Linguistic overrides that no amount of calibration data should be needed to get right."""
+    if _BENIGN_NO.match(text) and not _STRONG.search(text):
+        return min(probability, 0.2), "benign_no"        # "no worries" is a pleasantry, never a retraction
+    if is_bare_stop(text):
+        return max(probability, 0.99), "bare_stop"       # "abort" / "forget it" is a stop whatever MiniLM thinks
+    return probability, None
+
+
+def decide(score: float, high: float, mid: float) -> str:
+    """Confidence gate (§7.2): act / clarify / continue."""
+    if score >= high:
+        return "act"
+    if score >= mid:
+        return "clarify"
+    return "continue"
+
 
 class IntentClassifier:
     def __init__(
         self,
         model_name: str = "all-MiniLM-L6-v2",
-        high_threshold: float = 0.60,
-        mid_threshold: float = 0.40,
+        high_threshold: Optional[float] = None,
+        mid_threshold: Optional[float] = None,
         use_embeddings: bool = True,
     ):
         self.model_name = model_name
-        self.high_threshold = high_threshold
-        self.mid_threshold = mid_threshold
+        # Defaults come from the calibration file; explicit values override (tests, calibrate.py itself).
+        self.calibration = load_calibration()
+        self.high_threshold = self.calibration["high"] if high_threshold is None else high_threshold
+        self.mid_threshold = self.calibration["mid"] if mid_threshold is None else mid_threshold
         self.use_embeddings = use_embeddings
         self._model = None
         self._interrupt_embeddings = None
@@ -105,27 +171,22 @@ class IntentClassifier:
             continuation_sims = np.dot(self._continuation_embeddings, query_emb)
             max_cont_score = float(np.max(continuation_sims))
 
-            # Relative confidence margin
-            net_score = max_interrupt_score
-
-            if net_score >= self.high_threshold:
-                decision = "act"
-                is_interrupt = True
-                needs_clarification = False
-            elif net_score >= self.mid_threshold and net_score > max_cont_score:
-                decision = "clarify"
-                is_interrupt = False
-                needs_clarification = True
-            else:
-                decision = "continue"
-                is_interrupt = False
-                needs_clarification = False
+            vector = feature_vector(max_interrupt_score, max_cont_score, text_clean)
+            probability = interrupt_probability(vector, self.calibration["weights"])
+            probability, rule = apply_rules(probability, text_clean)
+            decision = decide(probability, self.high_threshold, self.mid_threshold)
 
             return {
-                "is_interrupt": is_interrupt,
-                "needs_clarification": needs_clarification,
-                "confidence_score": net_score,
+                "is_interrupt": decision == "act",
+                "needs_clarification": decision == "clarify",
+                "confidence_score": probability,
                 "decision": decision,
+                "mode": "embedding",
+                "rule": rule,
+                # Raw components, logged to the trace (§7.2) so a threshold can be audited after the fact.
+                "features": dict(zip(FEATURES, (round(v, 4) for v in vector))),
+                "interrupt_similarity": round(max_interrupt_score, 4),
+                "continuation_similarity": round(max_cont_score, 4),
             }
 
         # Fallback keyword-based heuristic
@@ -139,4 +200,5 @@ class IntentClassifier:
             "needs_clarification": False,
             "confidence_score": score,
             "decision": "act" if matched else "continue",
+            "mode": "keyword",
         }
