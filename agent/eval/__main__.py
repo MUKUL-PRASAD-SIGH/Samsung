@@ -15,6 +15,7 @@ import json
 import logging
 import sys
 
+from agent.clock import run_virtual
 from agent.eval.report import format_report, to_json
 from agent.eval.runner import Pacer, run_scenario
 from agent.eval.scenarios import SUITE
@@ -60,12 +61,19 @@ def main() -> None:
     p.add_argument("--llm", choices=["mock", "live"], default="mock")
     p.add_argument("--only", nargs="*", help="scenario names")
     p.add_argument("--tag", help="only scenarios with this tag (task/interrupt/safety/fault/voice/context)")
+    p.add_argument("--virtual", action="store_true",
+                   help="mock mode only: run on a virtual-time event loop (whole suite in seconds); voice scenarios are skipped")
     p.add_argument("--skip-voice", action="store_true")
     p.add_argument("--tpm", type=int, default=6000, help="live mode: tokens-per-minute budget (default 6000)")
     p.add_argument("--out", help="write a JSON report here")
     p.add_argument("--quiet", action="store_true", help="omit the per-scenario failure notes")
     args = p.parse_args()
     logging.disable(logging.CRITICAL)
+    if args.virtual:
+        if args.llm != "mock":
+            p.error("--virtual requires --llm mock (real network/ASR latency cannot be simulated)")
+        args.skip_voice = True
+        sys.exit(run_virtual(_main(args)))
     sys.exit(asyncio.run(_main(args)))
 
 

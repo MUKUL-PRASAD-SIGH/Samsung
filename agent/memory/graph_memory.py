@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import time
+from agent import clock
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -32,7 +33,7 @@ class TurnNode:
     agent_response: str
     epoch: int
     slots_snapshot: Dict[str, Any] = field(default_factory=dict)
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = field(default_factory=clock.now)
     pruned: bool = False  # set True when superseded by a rollback/branch
 
 
@@ -43,7 +44,7 @@ class EntityNode:
     key: str
     value: Any
     source_turn_id: str
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = field(default_factory=clock.now)
 
 
 @dataclass
@@ -53,7 +54,7 @@ class ArtifactNode:
     language: str
     content_hash: str
     source_turn_id: str
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = field(default_factory=clock.now)
 
 
 @dataclass

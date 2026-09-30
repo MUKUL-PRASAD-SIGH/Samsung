@@ -10,6 +10,7 @@ to session.slots directly.
 from __future__ import annotations
 
 import time
+from agent import clock
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -25,7 +26,7 @@ class SlotDelta:
     original_value: Any
     revised_value: Any
     epoch: int
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = field(default_factory=clock.now)
 
 
 @dataclass
@@ -62,7 +63,7 @@ class CanonicalTurn:
     overrides: Dict[str, Any] = field(default_factory=dict)
     intent_shift: Optional[str] = None
     aborted_calls_count: int = 0
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = field(default_factory=clock.now)
 
 
 class TurnScratchpad:
@@ -130,7 +131,7 @@ class TurnScratchpad:
 
     def _next_turn_id(self) -> str:
         self._turn_counter += 1
-        return f"{self._session.session_id}_turn_{self._turn_counter}_{int(time.time() * 1000)}"
+        return f"{self._session.session_id}_turn_{self._turn_counter}_{int(clock.now() * 1000)}"
 
     def commit(self, agent_response: str, artifacts: Optional[List[Dict[str, Any]]] = None) -> CanonicalTurn:
         """Distill this turn's noisy inputs into a clean CanonicalTurn and purge the scratchpad.

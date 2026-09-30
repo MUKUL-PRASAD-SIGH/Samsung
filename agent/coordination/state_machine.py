@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import time
+from agent import clock
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
@@ -38,7 +39,7 @@ class InFlightCall(BaseModel):
     epoch: int
     arguments: Dict[str, Any] = Field(default_factory=dict)
     status: str = "pending"  # "pending", "running", "completed", "cancelled"
-    created_at: float = Field(default_factory=time.time)
+    created_at: float = Field(default_factory=clock.now)
     asyncio_task: Optional[asyncio.Task] = None
     is_state_modifying: bool = False
     idempotency_key: Optional[str] = None
@@ -52,7 +53,7 @@ class SessionState:
         self.slots: Dict[str, Any] = {}
         self.in_flight_calls: Dict[str, InFlightCall] = {}
         self.idempotency_store: IdempotencyStore = IdempotencyStore()
-        self.last_activity: float = time.time()
+        self.last_activity: float = clock.now()
 
         # History ring buffer for rollback (§7.4)
         self.max_history: int = max_history
@@ -75,7 +76,7 @@ class SessionState:
 
     def touch(self) -> None:
         """Mark the session as recently active; resets the idle-eviction clock (gap #8)."""
-        self.last_activity = time.time()
+        self.last_activity = clock.now()
 
     def ensure_memory(self) -> None:
         """Lazily attach the L1 scratchpad and L2 graph memory to this session."""
@@ -92,7 +93,7 @@ class SessionState:
             "epoch": self.epoch,
             "intent": self.intent,
             "slots": dict(self.slots),
-            "timestamp": time.time(),
+            "timestamp": clock.now(),
         }
         self._history.append(snapshot)
         if len(self._history) > self.max_history:

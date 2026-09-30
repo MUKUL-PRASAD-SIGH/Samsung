@@ -16,6 +16,7 @@ import os
 import logging
 import re
 import time
+from agent import clock
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -141,6 +142,16 @@ class RateLimitError(RuntimeError):
     def __init__(self, message: str, retry_after_s: Optional[float] = None):
         super().__init__(message)
         self.retry_after_s = retry_after_s
+
+
+class ToolCallRejectedError(RuntimeError):
+    """HTTP 400 because the MODEL produced a tool call the provider's validator rejected (Groq:
+    "Tool call validation failed" / code tool_use_failed). The provider is healthy; the model's output was
+    bad, and sampling again usually fixes it -- so this must not count against the circuit breaker."""
+
+
+def _is_tool_rejection(err_text: str) -> bool:
+    return "tool_use_failed" in err_text or "Tool call validation failed" in err_text
 
 
 _DURATION_TOKEN = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h)")
@@ -376,12 +387,25 @@ class GroqBackend(LLMBackend):
                         f"Groq HTTP 429: {err_text}",
                         _parse_retry_after(e.headers.get("Retry-After") if e.headers else None, err_text),
                     ) from e
+                if e.code == 400 and _is_tool_rejection(err_text):
+                    raise ToolCallRejectedError(f"Groq HTTP 400: {err_text}") from e
                 raise RuntimeError(f"Groq HTTP {e.code}: {err_text}") from e
             except urllib.error.URLError as e:
                 logger.error("Groq network error: %s", e)
                 raise
 
-        res_json = await _request_with_rate_limit_retry(self.config, _do_request, "Groq")
+        try:
+            try:
+                res_json = await _request_with_rate_limit_retry(self.config, _do_request, "Groq")
+            except ToolCallRejectedError as first:
+                logger.warning("Groq rejected the model's tool call; sampling once more: %s", str(first)[:160])
+                res_json = await _request_with_rate_limit_retry(self.config, _do_request, "Groq")
+        except ToolCallRejectedError:
+            # Twice in a row: ask the user instead of failing the turn or tripping the breaker.
+            return LLMResponse(
+                response_type="clarification",
+                content="I couldn't work out that request cleanly -- could you rephrase it or give me the details again?",
+            )
 
         choice = res_json["choices"][0]["message"]
         if "tool_calls" in choice and choice["tool_calls"]:
@@ -481,14 +505,14 @@ class CircuitBreakerLLMClient:
         self._probe_in_flight = False
 
     def _cooldown_elapsed(self) -> bool:
-        return self._opened_at is not None and (time.monotonic() - self._opened_at) >= self.config.circuit_cooldown_s
+        return self._opened_at is not None and (clock.monotonic() - self._opened_at) >= self.config.circuit_cooldown_s
 
     def _record_failure(self) -> None:
         self.consecutive_timeouts += 1
         if self.is_circuit_open or self.consecutive_timeouts >= self.config.max_consecutive_timeouts:
             # (Re)open and restart the cooldown clock -- also covers a failed half-open probe.
             self.is_circuit_open = True
-            self._opened_at = time.monotonic()
+            self._opened_at = clock.monotonic()
 
     def _record_success(self) -> None:
         if self.is_circuit_open:

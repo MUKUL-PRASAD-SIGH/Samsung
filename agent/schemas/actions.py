@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import time
+from agent import clock
 import uuid
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -35,7 +36,7 @@ class BaseAction(BaseModel):
     session_id: str
     action_type: ActionType
     epoch: int
-    timestamp: float = Field(default_factory=time.time)
+    timestamp: float = Field(default_factory=clock.now)
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 

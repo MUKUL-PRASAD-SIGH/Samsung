@@ -6,6 +6,7 @@ import asyncio
 import json
 import subprocess
 import time
+from agent import clock
 import wave
 from collections import deque
 from dataclasses import dataclass, field
@@ -68,13 +69,13 @@ class RecordingBackend(LLMBackend):
 
     async def generate(self, messages, tools=None) -> LLMResponse:
         est = int((len(json.dumps(messages)) + len(json.dumps(tools or []))) / 3.5)
-        start = time.time()
+        start = clock.now()
         try:
             resp = await self.inner.generate(messages, tools)
-            self.calls.append(LLMCall(start, time.time() - start, None, est))
+            self.calls.append(LLMCall(start, clock.now() - start, None, est))
             return resp
         except BaseException as e:
-            self.calls.append(LLMCall(start, time.time() - start, f"{type(e).__name__}: {str(e)[:120]}", est))
+            self.calls.append(LLMCall(start, clock.now() - start, f"{type(e).__name__}: {str(e)[:120]}", est))
             raise
 
 
@@ -93,7 +94,7 @@ class Pacer:
     async def reserve(self, tokens: int) -> float:
         waited = 0.0
         while True:
-            now = time.time()
+            now = clock.now()
             if self._prune(now) + tokens <= self.tpm or not self._usage:
                 self._usage.append((now, tokens))
                 return waited
@@ -149,7 +150,7 @@ def _is_quiet(c: AgentCoordinator) -> bool:
 
 async def _run_voice(c: AgentCoordinator, sid: str, step: Step, timing_box: Dict[str, float]) -> None:
     audio = _pcm16k(FIXTURES / step.audio, step.lead_s, step.tail_s)
-    t_start = time.time()
+    t_start = clock.now()
     timing_box["t_sent"] = t_start
     timing_box["t_onset"] = t_start + step.lead_s
     timing_box["t_done"] = t_start + step.lead_s + _wav_seconds(FIXTURES / step.audio)
@@ -188,12 +189,12 @@ async def run_scenario(
         await pacer.reserve(max(turns, len(scenario.mock_llm)) * 1700)
 
     await coordinator.start()
-    t0 = time.time()
+    t0 = clock.now()
     timings: Dict[int, Dict[str, float]] = {}
     voice_tasks: List[asyncio.Task] = []
     try:
         for i, step in enumerate(scenario.steps):
-            await asyncio.sleep(max(0.0, t0 + step.at_s - time.time()))
+            await asyncio.sleep(max(0.0, t0 + step.at_s - clock.now()))
             box: Dict[str, float] = {}
             timings[i] = box
             if step.kind == "voice":
@@ -216,10 +217,10 @@ async def run_scenario(
             await asyncio.gather(*voice_tasks)
 
         # Wait for quiescence: nothing queued/in flight and no new trace records for a moment.
-        timed_out, stable_since, last_len = False, time.time(), -1
+        timed_out, stable_since, last_len = False, clock.now(), -1
         while True:
             await asyncio.sleep(0.1)
-            now = time.time()
+            now = clock.now()
             if now - t0 > scenario.max_s:
                 timed_out = True
                 break
@@ -233,5 +234,5 @@ async def run_scenario(
     return RunRecord(
         scenario=scenario, mode=mode, trace=list(trace.trace_history), executions=env.executions,
         step_timings=[StepTiming(i, **{k: timings[i][k] for k in ("t_sent", "t_onset", "t_done")}) for i in sorted(timings)],
-        llm_calls=backend.calls, router=env.router, t0=t0, wall_s=time.time() - t0, timed_out=timed_out,
+        llm_calls=backend.calls, router=env.router, t0=t0, wall_s=clock.now() - t0, timed_out=timed_out,
     )

@@ -138,3 +138,47 @@ def test_groq_default_timeout_leaves_room_for_long_replies(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
     monkeypatch.delenv("LLM_TIMEOUT_S", raising=False)
     assert LLMConfig().timeout_s == 8.0
+
+
+# ---- model-produced tool call rejected by the provider (HTTP 400) -------------------------------
+def _groq_with_responses(monkeypatch, outcomes):
+    """Patch urlopen to yield each outcome in turn: an Exception is raised, a dict is returned as JSON."""
+    import io, json, urllib.error, urllib.request
+    from agent.llm_client import GroqBackend, LLMConfig
+
+    calls = {"n": 0}
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        outcome = outcomes[min(calls["n"], len(outcomes) - 1)]
+        calls["n"] += 1
+        if isinstance(outcome, str):
+            raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, io.BytesIO(outcome.encode()))
+        return _Resp(json.dumps(outcome).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return GroqBackend(LLMConfig(backend_type="groq", api_key="k", model_name="m")), calls
+
+
+_REJECT = '{"error":{"message":"Tool call validation failed: parameters for tool search did not match schema","code":"tool_use_failed"}}'
+_OK = {"choices": [{"message": {"content": "Sure, done."}}]}
+
+
+async def test_tool_rejection_is_retried_once_and_recovers(monkeypatch):
+    backend, calls = _groq_with_responses(monkeypatch, [_REJECT, _OK])
+    resp = await backend.generate([{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    assert resp.response_type == "spoken_response" and calls["n"] == 2
+
+
+async def test_repeated_tool_rejection_becomes_clarification_not_breaker_failure(monkeypatch):
+    from agent.llm_client import CircuitBreakerLLMClient, LLMConfig
+
+    backend, calls = _groq_with_responses(monkeypatch, [_REJECT])
+    client = CircuitBreakerLLMClient(backend, LLMConfig(backend_type="groq", api_key="k", model_name="m"))
+    for _ in range(5):
+        resp = await client.generate([{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+        assert resp.response_type == "clarification"
+    assert not client.is_circuit_open and calls["n"] == 10

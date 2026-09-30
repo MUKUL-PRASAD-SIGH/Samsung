@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from agent import clock
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -67,17 +68,17 @@ class Environment:
         handler = FaultInjectedToolHandler(real, fault) if fault else real
 
         async def wrapped(**kwargs):
-            record = ExecRecord(tool=name, args=dict(kwargs), state_modifying=state_modifying, t_start=time.time())
+            record = ExecRecord(tool=name, args=dict(kwargs), state_modifying=state_modifying, t_start=clock.now())
             self.executions.append(record)
             try:
                 result = await handler(**kwargs)
             except asyncio.CancelledError:
-                record.cancelled, record.t_end = True, time.time()
+                record.cancelled, record.t_end = True, clock.now()
                 raise
             except Exception as e:  # injected faults surface to the coordinator, which must report them
-                record.error, record.t_end = f"{type(e).__name__}: {e}", time.time()
+                record.error, record.t_end = f"{type(e).__name__}: {e}", clock.now()
                 raise
-            record.completed, record.t_end = True, time.time()
+            record.completed, record.t_end = True, clock.now()
             return result
 
         return wrapped
@@ -89,17 +90,17 @@ def instrument_vision(env: "Environment", coordinator) -> None:
     original = coordinator._run_vision
 
     async def recorded(session_id, arguments):
-        record = ExecRecord(tool="analyze_frame", args=dict(arguments), state_modifying=False, t_start=time.time())
+        record = ExecRecord(tool="analyze_frame", args=dict(arguments), state_modifying=False, t_start=clock.now())
         env.executions.append(record)
         try:
             result = await original(session_id, arguments)
         except asyncio.CancelledError:
-            record.cancelled, record.t_end = True, time.time()
+            record.cancelled, record.t_end = True, clock.now()
             raise
         except Exception as e:
-            record.error, record.t_end = f"{type(e).__name__}: {e}", time.time()
+            record.error, record.t_end = f"{type(e).__name__}: {e}", clock.now()
             raise
-        record.completed, record.t_end = True, time.time()
+        record.completed, record.t_end = True, clock.now()
         return result
 
     coordinator._run_vision = recorded

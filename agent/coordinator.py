@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import time
+from agent import clock
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -145,7 +146,7 @@ class AgentCoordinator:
         """
         if SESSION_TTL_S <= 0:
             return []
-        now = now if now is not None else time.time()
+        now = now if now is not None else clock.now()
         stale = [
             sid for sid, session in self.sessions.items()
             if (now - session.last_activity) > SESSION_TTL_S
@@ -338,7 +339,7 @@ class AgentCoordinator:
             self._audio_buffers[sid].clear()
 
             # Run transcription off the event loop thread to prevent blocking
-            asr_started = time.perf_counter()
+            asr_started = clock.monotonic()
             transcribed_text = await asyncio.to_thread(
                 self.asr_processor.transcribe_audio_bytes,
                 raw_bytes,
@@ -353,7 +354,7 @@ class AgentCoordinator:
                     epoch=session.epoch,
                     text=transcribed_text or "",
                     asr_model=getattr(self.asr_processor, "model_size", None),
-                    latency_ms=round((time.perf_counter() - asr_started) * 1000, 1),
+                    latency_ms=round((clock.monotonic() - asr_started) * 1000, 1),
                 )
             )
 
@@ -380,7 +381,7 @@ class AgentCoordinator:
 
     def latest_frame(self, session_id: str) -> Optional[_Frame]:
         frames = self._frames.get(session_id)
-        if not frames or time.time() - frames[-1].ts > MAX_FRAME_AGE_S:
+        if not frames or clock.now() - frames[-1].ts > MAX_FRAME_AGE_S:
             return None
         return frames[-1]
 
@@ -393,7 +394,7 @@ class AgentCoordinator:
         result = await self.vision_backend.analyze(frame.data, frame.mime, question)
         return {
             "has_frame": True, "answer": result.answer, "model": result.model,
-            "frame_id": frame.frame_id, "frame_age_s": round(time.time() - frame.ts, 2),
+            "frame_id": frame.frame_id, "frame_age_s": round(clock.now() - frame.ts, 2),
         }
 
     # ------------------------------------------------------------------ continuous voice streaming
@@ -458,7 +459,7 @@ class AgentCoordinator:
                 )
 
     async def _voice_partial(self, session: SessionState, runtime: _VoiceRuntime, ev: PartialDue) -> None:
-        started = time.perf_counter()
+        started = clock.monotonic()
         text = await asyncio.to_thread(self.asr_processor.transcribe_audio_bytes, ev.pcm, "pcm_16khz")
         if not text or ev.utterance_id in runtime.finalized:
             return
@@ -468,7 +469,7 @@ class AgentCoordinator:
                 epoch=session.epoch,
                 text=text,
                 asr_model=getattr(self.asr_processor, "model_size", None),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+                latency_ms=round((clock.monotonic() - started) * 1000, 1),
                 is_partial=True,
                 utterance_id=ev.utterance_id,
             )
@@ -508,7 +509,7 @@ class AgentCoordinator:
                 await previous  # keep utterances in order
             except BaseException:  # noqa: BLE001 - an earlier utterance failing must not block this one
                 pass
-        started = time.perf_counter()
+        started = clock.monotonic()
         text = await asyncio.to_thread(self.asr_processor.transcribe_audio_bytes, ev.pcm, "pcm_16khz")
         await self.emit_action(
             TranscriptAction(
@@ -516,7 +517,7 @@ class AgentCoordinator:
                 epoch=session.epoch,
                 text=text or "",
                 asr_model=getattr(self.asr_processor, "model_size", None),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+                latency_ms=round((clock.monotonic() - started) * 1000, 1),
                 is_partial=False,
                 utterance_id=ev.utterance_id,
             )
