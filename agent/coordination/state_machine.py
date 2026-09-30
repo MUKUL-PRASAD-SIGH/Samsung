@@ -14,6 +14,7 @@ import asyncio
 from datetime import datetime, timezone
 import time
 from agent import clock
+from agent.coordination.slot_validation import SlotPatchError, validate_patch, validate_state
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
@@ -113,11 +114,22 @@ class SessionState:
         return False
 
     def patch_slots(self, slot_diff: Dict[str, Any], new_intent: Optional[str] = None) -> None:
-        """Apply a diff-based patch to slot state, preserving existing slots (§2.3)."""
+        """Apply a diff-based patch to slot state, preserving existing slots (§2.3).
+
+        Validated twice (§7.4): the patch itself before anything changes, and the state it would produce
+        after. A bad resulting state is undone via `rollback_snapshot()`, so callers either get the whole
+        patch or an unchanged session plus a `SlotPatchError`.
+        """
+        validate_patch(slot_diff)
         if new_intent is not None:
             self.intent = new_intent
         self.slots.update(slot_diff)
         self._save_to_history()
+        try:
+            validate_state(self.slots)
+        except SlotPatchError:
+            self.rollback_snapshot()
+            raise
 
     def stage_call_slots(self, call_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
         """Patch slots with a tool call's arguments at DISPATCH time (§2.3: the snapshot shows slots
@@ -127,8 +139,8 @@ class SessionState:
         user abandoned ("Mumbai" before "actually, Goa") can't linger in the snapshot.
         """
         previous = {k: self.slots.get(k, MISSING) for k in values}
+        self.patch_slots(values)  # raises SlotPatchError (state unchanged) before any undo record exists
         self._call_slot_undo[call_id] = {k: (previous[k], v) for k, v in values.items()}
-        self.patch_slots(values)
         return previous
 
     def revert_call_slots(self, call_id: str) -> None:

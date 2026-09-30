@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 import base64
 import os
 from agent.coordinator import AgentCoordinator
+from agent.warmup import run_full_warmup
 from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent, VideoFrameEvent
 from agent.schemas.actions import BaseAction
 from agent.trace_logger import TraceLogger
@@ -64,18 +65,23 @@ async def lifespan(app: FastAPI):
     _subscribers.clear()
     dispatcher = asyncio.create_task(_dispatch_actions_loop())
     await coordinator.start()
-    # Load + warm the Whisper model in the background so the first voice message doesn't
-    # pay the cold-start cost, without delaying server startup (/health reports progress).
-    asr_warmup_task = asyncio.create_task(asyncio.to_thread(coordinator.asr_processor.warmup))
-    # Load MiniLM (when enabled) now, not on the first user sentence.
-    asyncio.create_task(asyncio.to_thread(coordinator.intent_classifier.classify_text, "warmup text ping"))
+    # Warm every model in the background so the first user turn doesn't pay cold-start costs, without
+    # delaying server startup (/health reports progress). The LLM ping spends a little provider quota, so
+    # it only runs at boot when WARMUP_LLM=1; POST /warmup runs the full set on demand.
+    warmup_task = asyncio.create_task(run_full_warmup(coordinator, include_llm=os.getenv("WARMUP_LLM") == "1"))
     yield
-    asr_warmup_task.cancel()
+    warmup_task.cancel()
     dispatcher.cancel()
     await coordinator.stop()
 
 
 app = FastAPI(title="Interruptible Real-Time Agent", version="1.0.0", lifespan=lifespan)
+
+
+@app.post("/warmup")
+async def warmup():
+    """Run the full warm-up (every model, incl. one tiny LLM request) and return per-stage timings (§7.7)."""
+    return await run_full_warmup(coordinator, include_llm=True)
 
 
 @app.get("/health")
@@ -84,6 +90,7 @@ async def health():
         "status": "ok",
         "sessions": len(coordinator.sessions),
         "asr": coordinator.asr_processor.info(),
+        "warmup": getattr(coordinator, "warmup_report", None),
         "trace_dropped_records": coordinator.trace_logger.dropped_count,
     }
 

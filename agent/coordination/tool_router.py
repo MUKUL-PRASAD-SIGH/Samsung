@@ -32,6 +32,10 @@ class ToolDefinition:
             jsonschema.validate(instance=arguments, schema=self.parameters_schema)
 
 
+class UnknownToolError(KeyError):
+    """The model asked for a tool that is not registered."""
+
+
 class ToolRouter:
     def __init__(self, register_defaults: bool = True):
         self._tools: Dict[str, ToolDefinition] = {}
@@ -249,8 +253,9 @@ class ToolRouter:
     def validate_call(self, tool_name: str, arguments: Dict[str, Any]) -> None:
         """Validate tool arguments against registered manifest schema."""
         tool = self._tools.get(tool_name)
-        if tool:
-            tool.validate_args(arguments)
+        if tool is None:
+            raise UnknownToolError(f"no tool named {tool_name!r}")
+        tool.validate_args(arguments)
 
     def get_tool_manifests(self) -> Dict[str, Any]:
         """Return schema manifests formatted for LLM function calling."""

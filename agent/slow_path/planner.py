@@ -18,6 +18,7 @@ from agent.schemas.actions import (
     ClarificationAction,
     StateSnapshotAction,
 )
+from agent.coordination.slot_validation import SlotPatchError
 from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
 from agent.llm_client import LLMBackend, CircuitBreakerLLMClient, LLMConfig, get_fallback_backend
@@ -37,6 +38,13 @@ class Planner:
         self.config = config or LLMConfig()
         self.client = CircuitBreakerLLMClient(llm_backend, self.config, fallback_backend=get_fallback_backend())
         self.tool_router = tool_router
+
+    @staticmethod
+    def _reject(session: SessionState, question: str) -> List[BaseAction]:
+        return [
+            ClarificationAction(session_id=session.session_id, epoch=session.epoch, question=question),
+            session.get_snapshot(),
+        ]
 
     async def plan(
         self,
@@ -114,11 +122,12 @@ class Planner:
             tool_name = llm_resp.tool_name
             arguments = llm_resp.arguments
 
-            # Validate tool arguments against manifest schema
+            # An invalid call is never dispatched (§3.2 / §7.4): ask the user instead of running it.
             try:
                 self.tool_router.validate_call(tool_name, arguments)
             except Exception as e:
-                logger.warning("Tool call validation error for '%s': %s", tool_name, e)
+                logger.warning("Rejecting invalid tool call '%s' %r: %s", tool_name, arguments, e)
+                return self._reject(session, "I couldn't put that request together properly -- could you give me the details again?")
 
             is_modifying = self.tool_router.is_state_modifying(tool_name)
 
@@ -127,7 +136,12 @@ class Planner:
             # key hashes the slot values (§2.2), so two identical requests then get the same key while
             # two different ones don't.
             entities = entities_from_tool_call(tool_name, arguments)
-            previous = session.stage_call_slots(call_id, {k: v for _, k, v in entities}) if entities else {}
+            try:
+                previous = session.stage_call_slots(call_id, {k: v for _, k, v in entities}) if entities else {}
+            except SlotPatchError as e:
+                # The patch was refused (or rolled back): session state is unchanged, nothing was registered.
+                logger.warning("Slot patch for '%s' rejected: %s", tool_name, e)
+                return self._reject(session, e.user_message)
 
             tool_action = session.register_tool_call(
                 call_id=call_id,

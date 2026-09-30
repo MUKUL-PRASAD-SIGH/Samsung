@@ -132,6 +132,7 @@ class AgentCoordinator:
         )
         self.llm_backend = llm_backend or get_backend(LLMConfig())
         self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
+        self.warmup_report: Optional[Dict[str, Any]] = None  # filled by agent.warmup.run_full_warmup
         self.asr_processor = asr_processor or ASRProcessor()
         self.vision_backend = vision_backend or get_vision_backend()
 
