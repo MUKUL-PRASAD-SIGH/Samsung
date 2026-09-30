@@ -47,6 +47,8 @@ TRACE_RECORD_SCHEMA = {
     "additionalProperties": False,
 }
 
+_TRACE_VALIDATOR = jsonschema.Draft202012Validator(TRACE_RECORD_SCHEMA)
+
 
 def _redact_bytes(values: Dict[str, Any]) -> Dict[str, Any]:
     """Replace raw media (audio/video frames) with a size marker: keeps the trace small and JSON-serializable."""
@@ -116,7 +118,7 @@ class TraceLogger:
     def _validate_schema(self, record: Dict[str, Any]) -> bool:
         """Enforce the versioned trace record schema (§7.6). Returns False if the record was dropped."""
         try:
-            jsonschema.validate(record, TRACE_RECORD_SCHEMA)
+            _TRACE_VALIDATOR.validate(record)
         except jsonschema.ValidationError as e:
             if self.strict:
                 raise TraceValidationError(f"Trace record failed schema validation: {e.message}") from e

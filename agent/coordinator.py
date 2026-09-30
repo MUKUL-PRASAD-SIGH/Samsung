@@ -150,9 +150,16 @@ class AgentCoordinator:
             sid for sid, session in self.sessions.items()
             if (now - session.last_activity) > SESSION_TTL_S
             and not any(c.status in ("pending", "running") for c in session.in_flight_calls.values())
+            and not self._active_plans.get(sid)   # still waiting on the LLM
+            and sid not in self._voice            # a live voice stream is activity even when silent
         ]
         for sid in stale:
-            del self.sessions[sid]
+            session = self.sessions.pop(sid)
+            for call_id in session.in_flight_calls:
+                self._call_origin.pop(call_id, None)
+            debounce = self._debounce_tasks.pop(sid, None)
+            if debounce and not debounce.done():
+                debounce.cancel()
             self._pending_events.pop(sid, None)
             self._audio_buffers.pop(sid, None)
             self._frames.pop(sid, None)

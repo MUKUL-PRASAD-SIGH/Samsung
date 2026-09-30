@@ -65,3 +65,19 @@ async def test_post_event_touches_the_session_activity_clock():
     await coordinator.post_event(UserTextEvent(session_id="touch_session", text="hi"))
 
     assert session.last_activity > 0.0
+
+
+def test_evict_idle_sessions_spares_planning_and_voice_sessions_and_cleans_leftovers():
+    coordinator = AgentCoordinator()
+    for sid in ("planning", "voicing", "gone"):
+        coordinator.get_or_create_session(sid).last_activity = time.time() - 10_000
+    coordinator._active_plans["planning"] = 1
+    coordinator._voice["voicing"] = object()
+    coordinator.sessions["gone"].register_tool_call(call_id="c9", tool_name="search_flights", arguments={})
+    coordinator.sessions["gone"].in_flight_calls["c9"].status = "cancelled"
+    coordinator._call_origin["c9"] = "find flights"
+
+    evicted = coordinator.evict_idle_sessions(now=time.time())
+
+    assert evicted == ["gone"]
+    assert "c9" not in coordinator._call_origin
