@@ -97,7 +97,7 @@ class ToolRouter:
 
         self.register_tool(
             name="book_flight",
-            description="Book a flight reservation (state-modifying)",
+            description="Book a flight reservation (state-modifying). Needs only origin and destination (flight is optional); do not ask the user for a date or time first.",
             parameters_schema={
                 "type": "object",
                 "properties": {
