@@ -63,9 +63,11 @@ pytest -q -m live          # run the live-provider tests too (needs GROQ_API_KEY
 
 ```bash
 python -m agent.eval --llm mock                      # deterministic, scores the coordination layer
-INTENT_EMBEDDINGS=1 python -m agent.eval --llm mock --virtual  # (same, with the MiniLM interrupt classifier)
+INTENT_EMBEDDINGS=0 python -m agent.eval --llm mock --virtual  # skip the ~10 s MiniLM load for a quick run
 python -m agent.fast_path.calibrate --errors        # refit + report the interrupt detector on the held-out split
 python -m agent.eval --llm mock --virtual               # virtual-time event loop: whole suite in <1s (skips voice)
+python -m agent.eval --llm live --set holdout           # the hold-out set (different phrasings/situations); look at sparingly
+python -m agent.eval --llm live --set all --runs 3      # mean/std/worst per scenario, flaky flags, dev-vs-hold-out gap
 python -m agent.eval --llm live --out report.json    # real LLM, paced to a TPM budget (~10 min)
 python -m agent.eval --llm mock --tag interrupt      # subset by tag: task|interrupt|safety|fault|voice|context
 ```

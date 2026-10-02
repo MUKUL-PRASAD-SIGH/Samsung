@@ -10,10 +10,13 @@ Uses embedding similarity (all-MiniLM-L6-v2) for CPU-speed (< 5ms) classificatio
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import math
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -113,6 +116,21 @@ def decide(score: float, high: float, mid: float) -> str:
     return "continue"
 
 
+_MODEL_CACHE: Dict[str, Tuple[Any, Any, Any]] = {}
+_MODEL_LOCK = threading.Lock()
+
+
+def embeddings_enabled() -> bool:
+    """INTENT_EMBEDDINGS=1 forces the MiniLM classifier, =0 forces the keyword heuristic; unset/"auto" uses MiniLM
+    whenever sentence-transformers is installed (it falls back to keywords by itself if the model can't load)."""
+    mode = os.getenv("INTENT_EMBEDDINGS", "auto").strip().lower()
+    if mode in ("1", "true", "yes", "on"):
+        return True
+    if mode in ("0", "false", "no", "off"):
+        return False
+    return importlib.util.find_spec("sentence_transformers") is not None
+
+
 class IntentClassifier:
     def __init__(
         self,
@@ -132,17 +150,29 @@ class IntentClassifier:
         self._continuation_embeddings = None
 
     def _load_model(self) -> None:
-        """Lazy loader for sentence-transformers model."""
-        if self._model is None and self.use_embeddings:
-            try:
-                from sentence_transformers import SentenceTransformer
-                self._model = SentenceTransformer(self.model_name)
-                self._interrupt_embeddings = self._model.encode(INTERRUPT_ANCHORS, normalize_embeddings=True)
-                self._continuation_embeddings = self._model.encode(CONTINUATION_ANCHORS, normalize_embeddings=True)
-                logger.info("Loaded embedding model '%s' for Tier 1 detection", self.model_name)
-            except Exception as e:
-                logger.warning("Could not load sentence-transformers (%s). Falling back to keyword heuristics.", e)
-                self.use_embeddings = False
+        """Lazy loader for the sentence-transformers model, shared by every classifier in the process
+        (loading takes ~10 s; a coordinator per session/test must not each pay it)."""
+        if self._model is not None or not self.use_embeddings:
+            return
+        with _MODEL_LOCK:
+            cached = _MODEL_CACHE.get(self.model_name)
+            if cached is None:
+                try:
+                    from sentence_transformers import SentenceTransformer
+
+                    model = SentenceTransformer(self.model_name)
+                    cached = (
+                        model,
+                        model.encode(INTERRUPT_ANCHORS, normalize_embeddings=True),
+                        model.encode(CONTINUATION_ANCHORS, normalize_embeddings=True),
+                    )
+                    _MODEL_CACHE[self.model_name] = cached
+                    logger.info("Loaded embedding model '%s' for Tier 1 detection", self.model_name)
+                except Exception as e:
+                    logger.warning("Could not load sentence-transformers (%s). Falling back to keyword heuristics.", e)
+                    self.use_embeddings = False
+                    return
+        self._model, self._interrupt_embeddings, self._continuation_embeddings = cached
 
     def classify_text(self, text: str) -> Dict[str, Any]:
         """Classify user text into interrupt vs. continuation with confidence score (§7.2).

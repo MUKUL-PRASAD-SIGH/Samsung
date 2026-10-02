@@ -190,6 +190,9 @@ async def run_scenario(
         turns = sum(1 for s in scenario.steps if s.is_turn)
         await pacer.reserve(max(turns, len(scenario.mock_llm)) * 1700)
 
+    # Warm-up hook (§7.7): load the classifier before the clock starts, exactly as the server does at startup. Its
+    # first call loads a ~90 MB model synchronously, which would otherwise be billed to the first scenario's latency.
+    await asyncio.to_thread(coordinator.intent_classifier.classify_text, "warmup")
     await coordinator.start()
     t0 = clock.now()
     timings: Dict[int, Dict[str, float]] = {}

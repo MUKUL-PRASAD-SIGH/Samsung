@@ -1,4 +1,4 @@
-"""CLI:  python -m agent.eval [--llm mock|live] [--only NAME ...] [--tag TAG] [--out report.json]
+"""CLI:  python -m agent.eval [--llm mock|live] [--set dev|holdout|all] [--runs N] [--only NAME ...] [--tag TAG] [--out report.json]
 
 mock : scripted LLM per scenario -> deterministic; scores the COORDINATION layer (cancel, idempotency,
        snapshots, latency of the fast path, trace validity).
@@ -16,15 +16,17 @@ import logging
 import sys
 
 from agent.clock import run_virtual
-from agent.eval.report import format_report, to_json
+from agent.eval.report import (aggregate_runs, format_report, format_variance_report, generalization_gap, summarize,
+                               to_json)
 from agent.eval.runner import Pacer, run_scenario
-from agent.eval.scenarios import SUITE
+from agent.eval.suites import select
 from agent.eval.scorer import score_run
 from agent.multimodal.asr import ASRProcessor
 
 
 async def _main(args: argparse.Namespace) -> int:
-    scenarios = [s for s in SUITE
+    which = args.set or ("all" if args.only else "dev")
+    scenarios = [s for s in select(which)
                  if (not args.only or s.name in args.only)
                  and (not args.tag or args.tag in s.tags)
                  and not (args.skip_voice and s.uses_voice)]
@@ -40,18 +42,30 @@ async def _main(args: argparse.Namespace) -> int:
             scenarios = [s for s in scenarios if not s.uses_voice]
 
     pacer = Pacer(args.tpm) if args.llm == "live" else None
-    scores = []
-    for i, sc in enumerate(scenarios, 1):
-        print(f"[{i}/{len(scenarios)}] {sc.name} ...", end=" ", flush=True)
-        run = await run_scenario(sc, mode=args.llm, asr=asr, pacer=pacer)
-        score = score_run(run)
-        scores.append(score)
-        print(f"{score.total * 100:5.1f}  ({run.wall_s:.1f}s)")
+    runs = []
+    for rep in range(1, args.runs + 1):
+        scores = []
+        for i, sc in enumerate(scenarios, 1):
+            tag = f"[run {rep}/{args.runs}] " if args.runs > 1 else ""
+            print(f"{tag}[{i}/{len(scenarios)}] {sc.name} ...", end=" ", flush=True)
+            run = await run_scenario(sc, mode=args.llm, asr=asr, pacer=pacer)
+            score = score_run(run)
+            scores.append(score)
+            print(f"{score.total * 100:5.1f}  ({run.wall_s:.1f}s)")
+        runs.append(scores)
 
-    print(format_report(scores, args.llm, show_notes=not args.quiet))
+    if args.runs == 1:
+        print(format_report(runs[0], args.llm, show_notes=not args.quiet))
+        gap = generalization_gap(runs[0])
+        if gap:
+            print(f"\ngeneralization: dev {gap['dev']:.1f}  hold-out {gap['holdout']:.1f}  gap {gap['gap']:+.1f}  (target: gap <= 5; {gap['holdout_scenarios']} untuned hold-out scenarios)")
+    else:
+        print(format_variance_report(aggregate_runs(runs), generalization_gap([s for r in runs for s in r])))
+        print("\n(last run, in detail)")
+        print(format_report(runs[-1], args.llm, show_notes=not args.quiet))
     if args.out:
         with open(args.out, "w") as f:
-            json.dump(to_json(scores, args.llm), f, indent=2, default=str)
+            json.dump(to_json(runs[-1], args.llm, runs), f, indent=2, default=str)
         print(f"\nwrote {args.out}")
     return 0
 
@@ -59,6 +73,9 @@ async def _main(args: argparse.Namespace) -> int:
 def main() -> None:
     p = argparse.ArgumentParser(prog="python -m agent.eval", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--llm", choices=["mock", "live"], default="mock")
+    p.add_argument("--set", choices=["dev", "holdout", "all"], help="which scenarios: dev (default; the ones tuned against), "
+                   "holdout (generalization estimate), or all. Defaults to 'all' when --only names scenarios.")
+    p.add_argument("--runs", type=int, default=1, help="repeat the selection N times and report mean/std/worst + flaky scenarios")
     p.add_argument("--only", nargs="*", help="scenario names")
     p.add_argument("--tag", help="only scenarios with this tag (task/interrupt/safety/fault/voice/context)")
     p.add_argument("--virtual", action="store_true",

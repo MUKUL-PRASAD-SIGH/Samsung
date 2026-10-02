@@ -48,7 +48,7 @@ from agent.coordination.tool_router import ToolRouter
 from agent.trace_logger import TraceLogger
 from agent.tool_summaries import summarize_tool_result, summarize_tool_error
 from agent.fast_path.templates import generate_filler
-from agent.fast_path.intent_classifier import IntentClassifier
+from agent.fast_path.intent_classifier import IntentClassifier, embeddings_enabled
 from agent.slow_path.planner import Planner
 from agent.llm_client import MockLLMBackend, LLMBackend, get_backend, LLMConfig
 from agent.multimodal.asr import ASRProcessor
@@ -135,9 +135,7 @@ class AgentCoordinator:
         self.enable_debounce = enable_debounce
         self.debounce_window_s = debounce_window_s
 
-        self.intent_classifier = intent_classifier or IntentClassifier(
-            use_embeddings=os.getenv("INTENT_EMBEDDINGS", "0") == "1"
-        )
+        self.intent_classifier = intent_classifier or IntentClassifier(use_embeddings=embeddings_enabled())
         self.llm_backend = llm_backend or get_backend(LLMConfig())
         self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
         self.warmup_report: Optional[Dict[str, Any]] = None  # filled by agent.warmup.run_full_warmup
@@ -865,6 +863,12 @@ class AgentCoordinator:
             except Exception as e:
                 logger.exception("Error executing tool '%s': %s", tool_name, e)
                 error = str(e)
+
+        # Every tool returns a JSON object. Anything else (a truncated/garbled payload, a bare string) is a failed
+        # call: reporting "Done" for an unreadable response would be a false completion claim.
+        if error is None and not isinstance(result, dict):
+            logger.warning("Tool '%s' returned an unreadable result (%s)", tool_name, type(result).__name__)
+            result, error = None, "the service returned an unreadable response"
 
         # Post result to inbound event queue
         await self.post_event(
