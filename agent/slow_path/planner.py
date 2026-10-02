@@ -52,6 +52,7 @@ class Planner:
         session: SessionState,
         plan_epoch: Optional[int] = None,
         observation: Optional[str] = None,
+        on_slow=None,
     ) -> List[BaseAction]:
         """Generate reasoned actions (tool calls, responses, or clarifications) for user input.
 
@@ -61,6 +62,8 @@ class Planner:
 
         `observation` is the result of an observation tool (analyze_frame). It is attached to the request and
         analyze_frame is withheld, so the continuation acts on what was seen instead of looking again.
+
+        `on_slow` is awaited once if the model is still thinking at the soft deadline (a progress line; planning continues).
         """
         actions: List[BaseAction] = []
 
@@ -100,7 +103,7 @@ class Planner:
             tools = [t for t in tools if t.get("function", {}).get("name") != "analyze_frame"]
 
         # Generate LLM response through circuit-breaker-wrapped client
-        llm_resp = await self.client.generate(messages, tools=tools)
+        llm_resp = await self.client.generate(messages, tools=tools, on_slow=on_slow)
 
         if plan_epoch is not None and session.epoch != plan_epoch:
             logger.info("Discarding stale plan for %r: epoch %d -> %d while the LLM was thinking",

@@ -54,6 +54,7 @@ from agent.llm_client import MockLLMBackend, LLMBackend, get_backend, LLMConfig
 from agent.multimodal.asr import ASRProcessor
 from agent.multimodal.vision import ALLOWED_MIME, MAX_FRAME_BYTES, VisionBackend, get_vision_backend
 from agent.multimodal.streaming import (
+    endpoint_hint_ms,
     PartialDue,
     SpeechStart,
     UtteranceEnd,
@@ -82,6 +83,11 @@ MAX_FRAME_AGE_S = 15.0      # a frame older than this means sharing stopped: don
 # Resource bounds (gap #8): sessions are in-memory only and were never evicted, so a long-running
 # server accumulated one SessionState (plus its idempotency store and memory graph) per page load
 # forever. <= 0 disables eviction, e.g. for tests that assert on session count across time.
+# Adaptive endpointing (shorter when the transcript has stabilised, longer after a dangling word). 0 disables.
+ADAPTIVE_ENDPOINT = os.getenv("VOICE_ADAPTIVE_ENDPOINT", "1") == "1"
+# A final transcript may reuse the last partial only if it covered all but this much of the audio. Keep it small: the
+# last word is in the last few hundred ms ("Goa" vs "go" when a 300 ms-short partial was reused).
+FINAL_REUSE_SLACK_BYTES = int(os.getenv("VOICE_FINAL_REUSE_SLACK_MS", "100")) * 32
 SESSION_TTL_S = float(os.getenv("SESSION_TTL_S", "3600"))
 SESSION_EVICT_INTERVAL_S = float(os.getenv("SESSION_EVICT_INTERVAL_S", "300"))
 
@@ -104,6 +110,8 @@ class _VoiceRuntime:
     final_tail: Optional[asyncio.Task] = None  # serializes finals so utterances reach the planner in order
     barge_in_fired: Set[str] = field(default_factory=set)
     finalized: Set[str] = field(default_factory=set)
+    partials: Dict[str, List[str]] = field(default_factory=dict)  # utterance_id -> partial transcripts so far
+    last_partial: Dict[str, Tuple[int, str]] = field(default_factory=dict)  # utterance_id -> (pcm bytes covered, text)
     tasks: Set[asyncio.Task] = field(default_factory=set)
 
 
@@ -317,7 +325,9 @@ class AgentCoordinator:
 
         elif event.event_type == EventType.USER_TEXT:
             assert isinstance(event, UserTextEvent)
-            if self.enable_debounce and self.debounce_window_s > 0:
+            if event.immediate:
+                self._spawn_turn(self._handle_user_text(session, event))
+            elif self.enable_debounce and self.debounce_window_s > 0:
                 await self._queue_debounced_user_text(session, event)
             else:
                 await self._handle_user_text(session, event)
@@ -465,6 +475,7 @@ class AgentCoordinator:
                     runtime.partial_task = self._spawn_voice_task(runtime, self._voice_partial(session, runtime, ev))
             elif isinstance(ev, UtteranceEnd):
                 runtime.finalized.add(ev.utterance_id)  # any partial still in flight for it is now stale
+                runtime.partials.pop(ev.utterance_id, None)
                 await self.emit_action(
                     VoiceActivityAction(
                         session_id=sid, epoch=session.epoch, state="speech_end",
@@ -491,6 +502,12 @@ class AgentCoordinator:
                 utterance_id=ev.utterance_id,
             )
         )
+        history = runtime.partials.setdefault(ev.utterance_id, [])
+        history.append(text)
+        if ev.is_tail:
+            runtime.last_partial[ev.utterance_id] = (len(ev.pcm), text)
+        if ADAPTIVE_ENDPOINT and runtime.stream.utterance_id == ev.utterance_id:   # still live: adapt its endpoint
+            runtime.stream.set_endpoint_ms(endpoint_hint_ms(history, runtime.stream.cfg.endpoint_ms))
         await self._maybe_voice_barge_in(session, runtime, ev.utterance_id, text)
 
     async def _maybe_voice_barge_in(self, session: SessionState, runtime: _VoiceRuntime, utterance_id: str, text: str) -> None:
@@ -527,7 +544,13 @@ class AgentCoordinator:
             except BaseException:  # noqa: BLE001 - an earlier utterance failing must not block this one
                 pass
         started = clock.monotonic()
-        text = await asyncio.to_thread(self.asr_processor.transcribe_audio_bytes, ev.pcm, "pcm_16khz")
+        # The last partial already transcribed (nearly) all of this audio with the same model: reuse it instead of
+        # queueing a second pass over the same samples, which is the bulk of end-of-speech latency.
+        covered, partial_text = runtime.last_partial.pop(ev.utterance_id, (0, ""))
+        if partial_text and covered >= len(ev.pcm) - FINAL_REUSE_SLACK_BYTES:
+            text = partial_text
+        else:
+            text = await asyncio.to_thread(self.asr_processor.transcribe_audio_bytes, ev.pcm, "pcm_16khz")
         await self.emit_action(
             TranscriptAction(
                 session_id=session.session_id,
@@ -544,7 +567,7 @@ class AgentCoordinator:
         runtime.finalized.discard(ev.utterance_id)
         if text:
             logger.info("Voice utterance %s (%s): '%s'", ev.utterance_id, ev.reason, text)
-            await self.post_event(UserTextEvent(session_id=session.session_id, text=text, barge_in_handled=handled))
+            await self.post_event(UserTextEvent(session_id=session.session_id, text=text, barge_in_handled=handled, immediate=True))
 
     async def _queue_debounced_user_text(self, session: SessionState, event: UserTextEvent) -> None:
         """Buffer and coalesce rapid-fire user corrections (§7.5)."""
@@ -603,6 +626,15 @@ class AgentCoordinator:
 
         # Emit updated snapshot showing cancelled calls
         await self.emit_action(session.get_snapshot())
+
+    def _slow_notice(self, session: SessionState, plan_epoch: int):
+        """Progress line for the soft LLM deadline. Silent if the user already moved on (stale plan)."""
+        async def notice() -> None:
+            if session.epoch != plan_epoch:
+                return
+            await self.emit_action(FillerAction(
+                session_id=session.session_id, epoch=session.epoch, text="Still working on that -- one moment."))
+        return notice
 
     async def _handle_user_text(self, session: SessionState, event: UserTextEvent) -> None:
         """Process user text: Tier 1 intent/interrupt classification, Tier 2 fast filler, Tier 3 planner."""
@@ -666,7 +698,9 @@ class AgentCoordinator:
         sid = session.session_id
         self._active_plans[sid] = self._active_plans.get(sid, 0) + 1
         try:
-            actions = await self.planner.plan(event, session, plan_epoch=session.epoch)
+            actions = await self.planner.plan(
+                event, session, plan_epoch=session.epoch, on_slow=self._slow_notice(session, session.epoch)
+            )
         finally:
             self._active_plans[sid] -= 1
         if not actions:
@@ -720,6 +754,7 @@ class AgentCoordinator:
             actions = await self.planner.plan(
                 UserTextEvent(session_id=sid, text=request_text), session,
                 plan_epoch=session.epoch, observation=observation,
+                on_slow=self._slow_notice(session, session.epoch),
             )
         finally:
             self._active_plans[sid] -= 1

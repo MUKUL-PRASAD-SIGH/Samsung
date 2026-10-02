@@ -41,6 +41,8 @@ class UserTextEvent(BaseEvent):
     # True when a voice barge-in already interrupted in-flight work for this utterance (from a partial
     # transcript), so the coordinator must not bump the epoch a second time for the final text.
     barge_in_handled: bool = False
+    # A complete utterance (voice endpoint) needs no burst-coalescing window: planning starts immediately.
+    immediate: bool = False
 
 
 class AudioChunkEvent(BaseEvent):

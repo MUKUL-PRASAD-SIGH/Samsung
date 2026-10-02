@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, List, Optional, Protocol, Union
@@ -39,11 +40,13 @@ class VoiceConfig:
     speech_threshold: float = 0.5      # frame counts as speech at/above this probability
     silence_threshold: float = 0.35    # hysteresis: once speaking, only drop below this counts as silence
     min_speech_ms: float = 128         # sustained speech required before an utterance starts (rejects clicks)
-    endpoint_ms: float = 700           # silence that ends an utterance
+    endpoint_ms: float = 500           # silence that ends an utterance (adapted per utterance, see endpoint_hint_ms)
     preroll_ms: float = 320            # audio kept from before onset so the first word isn't clipped
     max_utterance_s: float = 20.0      # hard cap; forces an endpoint on run-on speech
-    partial_interval_ms: float = 800   # cadence of partial-transcript requests while speaking
+    partial_interval_ms: float = 500   # cadence of partial-transcript requests while speaking
     min_partial_ms: float = 600        # don't transcribe less audio than this for a partial
+    tail_partial_ms: float = 200       # once silence has lasted this long, transcribe everything said so far (0 = off):
+                                       # the text is then ready before the endpoint fires and the final can reuse it
 
     @classmethod
     def from_env(cls) -> "VoiceConfig":
@@ -57,7 +60,40 @@ class VoiceConfig:
             max_utterance_s=_env_float("VOICE_MAX_UTTERANCE_S", d.max_utterance_s),
             partial_interval_ms=_env_float("VOICE_PARTIAL_INTERVAL_MS", d.partial_interval_ms),
             min_partial_ms=_env_float("VOICE_MIN_PARTIAL_MS", d.min_partial_ms),
+            tail_partial_ms=_env_float("VOICE_TAIL_PARTIAL_MS", d.tail_partial_ms),
         )
+
+
+# Words a speaker says when more is coming ("book a flight to ... [pause]"): don't endpoint on the pause.
+_CONTINUATION_WORDS = frozenset(
+    "and or but to from for at in on with the a an of by then also plus into toward towards via after before "
+    "between next my your our that this those these is are was".split()
+)
+
+
+def endpoint_hint_ms(partials: List[str], base_ms: float) -> float:
+    """Adaptive endpointing (spec latency lever): how long a silence should end this utterance.
+
+    * last partial ends mid-thought (comma or a dangling "to"/"and"/"the"...) -> wait longer (x1.6, <= 1000 ms),
+      so "book a flight to ... Goa" isn't cut at the pause;
+    * the last two partials agree and read as a complete request (>= 3 words, or terminal punctuation) ->
+      the transcript has stopped changing, so end sooner (x0.6, >= 300 ms).
+    """
+    if not partials:
+        return base_ms
+    last = partials[-1].strip().lower()
+    if not last:
+        return base_ms
+    words = re.findall(r"[a-z0-9']+", last)
+    if last.endswith(",") or (words and words[-1] in _CONTINUATION_WORDS):
+        return min(1000.0, base_ms * 1.6)
+    if len(partials) >= 2 and _norm(partials[-2]) == _norm(last) and (len(words) >= 3 or last[-1] in ".?!"):
+        return max(300.0, base_ms * 0.6)
+    return base_ms
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9']+", text.lower()))
 
 
 # ----------------------------------------------------------------------------- events
@@ -71,6 +107,9 @@ class PartialDue:
     """Consumer should (if idle) transcribe `pcm` and publish it as a partial transcript."""
     utterance_id: str
     pcm: bytes
+    # Taken after the speaker went quiet (>= tail_partial_ms of silence), so it covers ALL the speech said so far
+    # and its text can stand in for the final transcript. Ordinary cadence partials may stop mid-word.
+    is_tail: bool = False
 
 
 @dataclass
@@ -153,6 +192,7 @@ class VoiceStream:
         self._max_frames = round(self.cfg.max_utterance_s * 1000 / FRAME_MS)
         self._partial_frames = max(1, round(self.cfg.partial_interval_ms / FRAME_MS))
         self._min_partial_frames = max(1, round(self.cfg.min_partial_ms / FRAME_MS))
+        self._tail_partial_frames = round(self.cfg.tail_partial_ms / FRAME_MS) if self.cfg.tail_partial_ms > 0 else 0
         self._utt_counter = 0
         self.reset()
 
@@ -169,6 +209,10 @@ class VoiceStream:
         self._silence_run = 0
         self._speech_frames = 0
         self._since_partial = 0
+
+    def set_endpoint_ms(self, ms: float) -> None:
+        """Override the silence needed to end the CURRENT utterance (reset when it ends)."""
+        self._endpoint_frames = max(1, round(ms / FRAME_MS))
 
     @property
     def is_speaking(self) -> bool:
@@ -225,6 +269,13 @@ class VoiceStream:
             self._end_utterance("max_length", events)
             return
 
+        # Speech has (probably) just ended: transcribe it NOW, in parallel with the remaining endpoint wait.
+        if (self._tail_partial_frames and self._silence_run == self._tail_partial_frames
+                and self._tail_partial_frames < self._endpoint_frames and len(self._frames) >= self._min_partial_frames):
+            self._since_partial = 0
+            events.append(PartialDue(self._utt_id, b"".join(self._frames), is_tail=True))  # type: ignore[arg-type]
+            return
+
         self._since_partial += 1
         if self._since_partial >= self._partial_frames and len(self._frames) >= self._min_partial_frames:
             self._since_partial = 0
@@ -262,4 +313,5 @@ class VoiceStream:
         self._silence_run = 0
         self._speech_frames = 0
         self._since_partial = 0
+        self._endpoint_frames = max(1, round(self.cfg.endpoint_ms / FRAME_MS))
         self._preroll.clear()

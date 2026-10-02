@@ -75,6 +75,12 @@ class LLMConfig(BaseModel):
     rate_limit_max_wait_s: float = Field(
         default_factory=lambda: float(os.getenv("LLM_RATE_LIMIT_MAX_WAIT_S", "3.0"))
     )
+    # Soft deadline: if the model hasn't answered by now, say so (progress line) but KEEP WAITING until
+    # timeout_s (the hard deadline). Preserves latency perception without abandoning slow-but-good answers.
+    # 0 disables. Only meaningful below timeout_s.
+    soft_deadline_s: float = Field(
+        default_factory=lambda: float(os.getenv("LLM_SOFT_DEADLINE_S", "2.0"))
+    )
     circuit_cooldown_s: float = Field(
         default_factory=lambda: float(os.getenv("LLM_CIRCUIT_COOLDOWN_S", "15.0"))
     )
@@ -91,6 +97,8 @@ class LLMResponse(BaseModel):
     memory_update: Optional[Dict[str, Any]] = None
     # Set when this response came from the fallback backend (circuit open on the primary), §7.1.
     via_fallback: bool = False
+    # Provider-reported token usage ({"prompt_tokens", "completion_tokens", "total_tokens"}) when available.
+    usage: Optional[Dict[str, int]] = None
 
 
 _MEMORY_MARKER = re.compile(r"[*_`]*MEMORY_UPDATE[*_`]*\s*:?[*_`]*\s*")
@@ -189,6 +197,15 @@ async def _request_with_rate_limit_retry(config: "LLMConfig", do_request, provid
         logger.warning("%s rate limited; retrying once in %.2fs", provider, wait)
         await asyncio.sleep(wait + 0.1)
         return await loop.run_in_executor(None, do_request)
+
+
+def _usage(res_json: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Provider-reported token counts, if present and well-formed."""
+    u = res_json.get("usage") if isinstance(res_json, dict) else None
+    if not isinstance(u, dict):
+        return None
+    out = {k: int(u[k]) for k in ("prompt_tokens", "completion_tokens", "total_tokens") if isinstance(u.get(k), (int, float))}
+    return out or None
 
 
 class LLMBackend(ABC):
@@ -321,6 +338,7 @@ class OpenRouterBackend(LLMBackend):
                 tool_name=tc["name"],
                 arguments=args,
                 raw_text=json.dumps(tc),
+                usage=_usage(res_json),
             )
         cleaned_content, memory_update = _extract_memory_update(choice.get("content", ""))
         return LLMResponse(
@@ -328,6 +346,7 @@ class OpenRouterBackend(LLMBackend):
             content=cleaned_content,
             raw_text=choice.get("content", ""),
             memory_update=memory_update,
+            usage=_usage(res_json),
         )
 
 
@@ -416,6 +435,7 @@ class GroqBackend(LLMBackend):
                 tool_name=tc["name"],
                 arguments=args,
                 raw_text=json.dumps(tc),
+                usage=_usage(res_json),
             )
 
         cleaned_content, memory_update = _extract_memory_update(choice.get("content", ""))
@@ -424,6 +444,7 @@ class GroqBackend(LLMBackend):
             content=cleaned_content,
             raw_text=choice.get("content", ""),
             memory_update=memory_update,
+            usage=_usage(res_json),
         )
 
 
@@ -525,7 +546,9 @@ class CircuitBreakerLLMClient:
         self,
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        on_slow=None,
     ) -> LLMResponse:
+        """`on_slow` (async, no args) is awaited once if the soft deadline passes before the model answers."""
         is_probe = False
         if self.is_circuit_open:
             if self._cooldown_elapsed() and not self._probe_in_flight:
@@ -544,11 +567,7 @@ class CircuitBreakerLLMClient:
                 )
 
         try:
-            # Enforce hard deadline
-            response = await asyncio.wait_for(
-                self.backend.generate(messages, tools),
-                timeout=self.config.timeout_s,
-            )
+            response = await self._generate_with_deadlines(messages, tools, on_slow)
             self._record_success()
             return response
 
@@ -582,6 +601,25 @@ class CircuitBreakerLLMClient:
         finally:
             if is_probe:
                 self._probe_in_flight = False
+
+    async def _generate_with_deadlines(self, messages, tools, on_slow) -> LLMResponse:
+        """Hard deadline `timeout_s`; a soft deadline fires `on_slow` once and then keeps waiting."""
+        soft, hard = self.config.soft_deadline_s, self.config.timeout_s
+        if on_slow is None or not (0 < soft < hard):
+            return await asyncio.wait_for(self.backend.generate(messages, tools), timeout=hard)
+        task = asyncio.ensure_future(self.backend.generate(messages, tools))
+        try:
+            done, _ = await asyncio.wait({task}, timeout=soft)
+            if not done:
+                try:
+                    await on_slow()
+                except Exception:  # noqa: BLE001 - a failing progress line must never fail the request
+                    logger.exception("on_slow callback failed")
+                return await asyncio.wait_for(task, timeout=max(0.0, hard - soft))
+            return task.result()
+        finally:
+            if not task.done():
+                task.cancel()
 
     async def _call_fallback(
         self,

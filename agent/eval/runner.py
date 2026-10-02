@@ -72,7 +72,9 @@ class RecordingBackend(LLMBackend):
         start = clock.now()
         try:
             resp = await self.inner.generate(messages, tools)
-            self.calls.append(LLMCall(start, clock.now() - start, None, est))
+            # Prefer the provider's own count over the chars/3.5 estimate (true TPM accounting).
+            actual = (resp.usage or {}).get("total_tokens")
+            self.calls.append(LLMCall(start, clock.now() - start, None, actual or est))
             return resp
         except BaseException as e:
             self.calls.append(LLMCall(start, clock.now() - start, f"{type(e).__name__}: {str(e)[:120]}", est))
