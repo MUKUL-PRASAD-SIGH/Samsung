@@ -79,6 +79,8 @@ class Planner:
                     "When the user requests an action, call the appropriate tool. "
                     "If they explicitly ask to book, reserve or cancel something and have given the details, "
                     "call that booking tool directly -- do not search first. "
+                    "But a statement of need or intent (\"I need to get to...\", \"I'm looking to fly...\", \"I want a hotel\") "
+                    "is NOT a request to book: search, and only book, reserve or cancel when the user explicitly says to. "
                     "Only ask a clarifying question when a REQUIRED tool argument is missing; never ask for details "
                     "(such as a date or time) that the tool does not accept. "
                     "If the user refers to something visible (\"this\", \"on my screen\", \"in the picture\", \"the sign\"), "
