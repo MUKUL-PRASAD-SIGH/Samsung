@@ -6,6 +6,19 @@
 interruptible real-time agent (Samsung Hackathon, Theme 05): talk over it, correct it mid-task, and it adapts instead of finishing the
 wrong thing.
 
+## Download
+
+Ready-made apps are on the [release page](https://github.com/V4RSH1TH-R3DDY/Kairos/releases/tag/PRISM_GENAI_HACKATHON_Y2026): no Python, Node or terminal needed.
+
+| Platform | Download | Notes |
+|---|---|---|
+| **Windows 10 / 11** | [`Kairos-Setup-1.0.0.exe`](https://github.com/V4RSH1TH-R3DDY/Kairos/releases/download/PRISM_GENAI_HACKATHON_Y2026/Kairos-Setup-1.0.0.exe) (installer) or [`Kairos-Windows-portable-1.0.0.zip`](https://github.com/V4RSH1TH-R3DDY/Kairos/releases/download/PRISM_GENAI_HACKATHON_Y2026/Kairos-Windows-portable-1.0.0.zip) | Runs the whole agent on your PC. On first run it asks for your Groq / OpenRouter API key. Details: [Windows app](#windows-app-download-and-run). |
+| **Android** | [`Kairos-Android-1.0.0.apk`](https://github.com/V4RSH1TH-R3DDY/Kairos/releases/download/PRISM_GENAI_HACKATHON_Y2026/Kairos-Android-1.0.0.apk) | A remote for a running Kairos: the agent itself runs on a computer, so install the Windows app (or run from source) first, then point the phone at it. Details: [Android app](#android-app). |
+
+Both builds are unsigned (Windows SmartScreen shows "unknown publisher"; Android asks you to allow installing from your browser). The
+phone and the computer must be on the same network, and the computer must be started with `--host 0.0.0.0` so the phone can reach it.
+Prefer to run from source? Continue below.
+
 ## For judges: setup in 3 steps
 
 Needs Python 3.10-3.12 (3.13+ is not supported by the speech dependencies) and, to build the web UI, Node.js 18+. No API key is required.
@@ -38,6 +51,8 @@ start Kairos from the Start menu. (A portable `Kairos-Windows-portable-<version>
 * **First start downloads** the speech-recognition model (about 140 MB, when you first use voice) and the speaking voice (about 60 MB), then works offline except for the LLM calls.
 * The installer is unsigned, so Windows SmartScreen may say "unknown publisher": choose *More info → Run anyway*.
 * A small console window stays open while Kairos runs; close it to quit.
+* **To use it from your phone** (Android app): start it with `Kairos.exe --host 0.0.0.0` (from a terminal in the install folder). It then
+  prints an access key to type into the phone, and Windows may ask to allow it through the firewall.
 * The desktop build omits PyTorch to stay small, so interruptions are detected by the keyword classifier rather than the MiniLM
   one (the Docker and `pip` installs keep MiniLM).
 * Build it yourself: `.github/workflows/build-desktop.yml` (runs on version tags or from the Actions tab), or locally with
