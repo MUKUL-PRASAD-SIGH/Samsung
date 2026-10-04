@@ -24,7 +24,10 @@ jobs:
 
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
-      - uses: android-actions/setup-android@v3
+      # The runner image already ships an Android SDK; android-actions/setup-android currently fails on it ("Failed to find package
+      # 'tools'"), so only the licence acceptance Gradle needs to auto-install platform/build-tools is done here.
+      - name: Accept Android SDK licences
+        run: yes | "$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Version
