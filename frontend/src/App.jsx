@@ -215,6 +215,13 @@ class PCMCapture extends AudioWorkletProcessor {
 registerProcessor('pcm-capture', PCMCapture);
 `;
 
+// Access token for deployments that set AUTH_TOKEN: open the UI once as https://host/?token=... and it is remembered.
+function getAuthToken() {
+  const fromUrl = new URLSearchParams(window.location.search).get('token');
+  if (fromUrl) localStorage.setItem('authToken', fromUrl);
+  return fromUrl || localStorage.getItem('authToken') || '';
+}
+
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
@@ -250,7 +257,8 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState('openai/gpt-oss-120b');
   const [asrEngine, setAsrEngine] = useState('faster-whisper');
   useEffect(() => {
-    fetch('/health')
+    const token = getAuthToken();
+    fetch('/health', token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
       .then((r) => r.json())
       .then((h) => {
         setTtsAvailable(!!(h.tts && h.tts.available));
@@ -305,7 +313,8 @@ export default function App() {
   // Connect WebSocket to FastAPI backend
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/${sessionId}`;
+    const token = getAuthToken();
+    const wsUrl = `${protocol}//${window.location.host}/ws/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from agent.workers.base import BaseAgentWorker
 from agent.workers.coder_agent import CoderAgent

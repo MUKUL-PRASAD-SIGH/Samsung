@@ -15,8 +15,7 @@ import json
 import os
 import logging
 import re
-import time
-from agent import clock
+from agent import clock, metrics
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -534,6 +533,7 @@ class CircuitBreakerLLMClient:
             # (Re)open and restart the cooldown clock -- also covers a failed half-open probe.
             self.is_circuit_open = True
             self._opened_at = clock.monotonic()
+            metrics.LLM_CIRCUIT_OPEN.set(1)
 
     def _record_success(self) -> None:
         if self.is_circuit_open:
@@ -541,6 +541,7 @@ class CircuitBreakerLLMClient:
         self.consecutive_timeouts = 0
         self.is_circuit_open = False
         self._opened_at = None
+        metrics.LLM_CIRCUIT_OPEN.set(0)
 
     async def generate(
         self,
@@ -561,17 +562,22 @@ class CircuitBreakerLLMClient:
                 return await self._call_fallback(messages, tools)
             else:
                 logger.warning("Circuit breaker is OPEN. Returning fallback response.")
+                metrics.LLM_REQUESTS.inc(outcome="circuit_open")
                 return LLMResponse(
                     response_type="clarification",
                     content="I'm still processing your request, please give me a moment.",
                 )
 
+        started = clock.monotonic()
         try:
             response = await self._generate_with_deadlines(messages, tools, on_slow)
             self._record_success()
+            metrics.LLM_REQUESTS.inc(outcome="ok")
+            metrics.LLM_LATENCY.observe(clock.monotonic() - started)
             return response
 
         except (asyncio.TimeoutError, TimeoutError):
+            metrics.LLM_REQUESTS.inc(outcome="timeout")
             self._record_failure()
             logger.warning(
                 "LLM call exceeded timeout deadline (%.2fs). Consecutive failures: %d",
@@ -589,6 +595,7 @@ class CircuitBreakerLLMClient:
         except Exception as e:
             # Provider errors (HTTP 429/5xx, network drops, malformed JSON) used to escape as
             # raw exceptions and the user got no reply at all. Treat them as breaker failures.
+            metrics.LLM_REQUESTS.inc(outcome="rate_limited" if isinstance(e, RateLimitError) else "error")
             self._record_failure()
             logger.error("LLM backend error (%s: %s). Consecutive failures: %d", type(e).__name__, e, self.consecutive_timeouts)
             if self.is_circuit_open and self.fallback_backend is not None:
@@ -611,6 +618,7 @@ class CircuitBreakerLLMClient:
         try:
             done, _ = await asyncio.wait({task}, timeout=soft)
             if not done:
+                metrics.LLM_SOFT_DEADLINE.inc()
                 try:
                     await on_slow()
                 except Exception:  # noqa: BLE001 - a failing progress line must never fail the request
@@ -628,6 +636,7 @@ class CircuitBreakerLLMClient:
     ) -> LLMResponse:
         """Route to the smaller/faster fallback backend while the primary's circuit is open (§7.1)."""
         self.fallback_calls += 1
+        metrics.LLM_REQUESTS.inc(outcome="fallback")
         try:
             response = await asyncio.wait_for(
                 self.fallback_backend.generate(messages, tools),

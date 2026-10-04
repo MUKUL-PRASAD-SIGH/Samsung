@@ -91,7 +91,7 @@ HOLDOUT: List[Scenario] = [
                   tool("book_flight", origin="Mumbai", destination="London")],
     ),
     Scenario(
-        name="ho_correction_without_keyword", tags=("interrupt", "holdout", "tuned"),
+        name="ho_correction_without_keyword", tags=("interrupt", "holdout", "tuned", "needs_embeddings"),
         description="A correction that contains none of the obvious interrupt words ('sorry, I meant ...').",
         steps=[Step(0, text="What's the weather in Lucknow?"),
                Step(0.7, text="Sorry, I meant Jaipur", interrupts=True)],

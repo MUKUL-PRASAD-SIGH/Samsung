@@ -87,6 +87,42 @@ python -m agent.eval --llm mock --tag interrupt      # subset by tag: task|inter
 
 Results are written to `eval_results/`.
 
+## Deployment
+
+```bash
+cp .env.example .env            # add GROQ_API_KEY (or OPENROUTER_API_KEY) and set AUTH_TOKEN
+docker compose up --build       # http://localhost:8000, bound to localhost only; models are baked into the image
+DOMAIN=agent.example.com TRUST_PROXY=1 docker compose --profile https up --build -d   # + Caddy, automatic HTTPS
+```
+
+The microphone and camera only work in a secure context, so anything other than `localhost` needs HTTPS (the `https`
+profile does that). The image is multi-stage (UI build, pinned CPU-only dependencies from `requirements.lock`, slim
+non-root runtime, read-only filesystem) and about 3.8 GB with the Whisper, MiniLM and Piper models baked in
+(`--build-arg BAKE_MODELS=0` skips them and downloads at first run into the `models` volume). Dependencies are pinned for
+Python 3.11; CI tests 3.10, 3.11 and 3.12.
+
+**Security defaults** (`agent/settings.py`, all overridable, documented in `.env.example`):
+
+| Protection | Default |
+|---|---|
+| Bearer token for `/ws`, `/warmup`, `/metrics`, full `/health` | off until `AUTH_TOKEN` is set (a startup warning says so). The UI reads `?token=` from its URL. |
+| WebSocket origin check | same host or localhost only; `ALLOWED_ORIGINS` for others. Clients with no `Origin` (scripts, the eval kit) are allowed. |
+| Session ids | `[A-Za-z0-9_-]{1,64}` or the handshake is refused |
+| Limits | 20 connections per IP, 500 sessions, 30 msgs/s per connection (burst 60), 256 KB/s of audio, 4 MB per message, 8000 chars per user text |
+| Abuse handling | over-limit messages are dropped with `{"type":"error","code":...}`; 50 violations close the connection |
+| `POST /warmup` | at most once per 30 s (it spends LLM tokens) |
+| Headers | `X-Request-ID` echoed, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` |
+
+**Observability:** `LOG_FORMAT=json` gives one JSON object per line with `session_id`, `epoch` and `request_id`.
+`GET /metrics` (Prometheus text format) exposes first-acknowledgement and interrupt-to-cancel latency histograms, LLM
+request outcomes (ok / timeout / error / rate_limited / fallback / circuit_open), LLM latency, circuit-breaker state,
+spoken-reply stop latency, and what was turned away and why (`agent_rejected_total{reason=...}`).
+
+**CI** (`.github/workflows/`): ruff, gitleaks, tests on Python 3.10/3.11/3.12, a mock-mode eval gate
+(`python -m agent.eval --llm mock --virtual --set all --fail-under 97`), the frontend build and a Docker build; plus a nightly
+live eval (needs the `GROQ_API_KEY` repository secret) that uploads its report. `python scripts/eval_trend.py` prints the trend
+of recorded reports.
+
 ## Environment variables
 
 See [`.env.example`](.env.example) for the full annotated list. The essentials:

@@ -2,12 +2,10 @@
 in-memory only and previously never freed, so a long-running server accumulated one SessionState
 per page load forever."""
 
-import asyncio
 import time
 
 import pytest
 
-from agent.coordination.tool_router import ToolRouter
 from agent.coordinator import AgentCoordinator
 
 

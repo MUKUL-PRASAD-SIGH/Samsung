@@ -6,7 +6,6 @@ with custom personas, execution steps, and target artifacts.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
@@ -38,7 +37,7 @@ class DynamicAgentWorker(BaseAgentWorker):
         self.custom_steps = list(steps) if steps else [
             f"Analyzing specifications and requirements for '{goal}'...",
             f"Applying {role} domain patterns and architectural constraints...",
-            f"Validating outputs and packaging production artifact...",
+            "Validating outputs and packaging production artifact...",
         ]
         self.expected_artifact = expected_artifact or kwargs.get("artifact", {})
         self.llm_backend = llm_backend

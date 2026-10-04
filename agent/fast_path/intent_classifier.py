@@ -149,6 +149,19 @@ class IntentClassifier:
         self._interrupt_embeddings = None
         self._continuation_embeddings = None
 
+    @property
+    def ready(self) -> bool:
+        """True when classify_text will not block on a model load (keyword mode, or MiniLM already loaded)."""
+        return not self.use_embeddings or self._model is not None
+
+    async def aload(self) -> None:
+        """Load the model without blocking the event loop (the first load takes seconds, and a stalled loop delays
+        exactly the interrupts and tool results this system exists to react to)."""
+        if not self.ready:
+            import asyncio
+
+            await asyncio.to_thread(self._load_model)
+
     def _load_model(self) -> None:
         """Lazy loader for the sentence-transformers model, shared by every classifier in the process
         (loading takes ~10 s; a coordinator per session/test must not each pay it)."""
@@ -160,7 +173,14 @@ class IntentClassifier:
                 try:
                     from sentence_transformers import SentenceTransformer
 
-                    model = SentenceTransformer(self.model_name)
+                    # CPU on purpose: 22M parameters is ~3 ms per sentence there, and CUDA init costs seconds of startup
+                    # plus VRAM the LLM/ASR/VLM budget needs.
+                    import torch
+
+                    # A 22M-parameter model gains nothing from 8 intra-op threads but fights Whisper/VAD/the event loop
+                    # for cores (measured: classification latency jitter and delayed debounce timers under load).
+                    torch.set_num_threads(int(os.getenv("INTENT_THREADS", "2")))
+                    model = SentenceTransformer(self.model_name, device=os.getenv("INTENT_DEVICE", "cpu"))
                     cached = (
                         model,
                         model.encode(INTERRUPT_ANCHORS, normalize_embeddings=True),
@@ -174,7 +194,7 @@ class IntentClassifier:
                     return
         self._model, self._interrupt_embeddings, self._continuation_embeddings = cached
 
-    def classify_text(self, text: str) -> Dict[str, Any]:
+    def classify_text(self, text: str, force_keywords: bool = False) -> Dict[str, Any]:
         """Classify user text into interrupt vs. continuation with confidence score (§7.2).
         
         Returns:
@@ -188,9 +208,10 @@ class IntentClassifier:
         if not text_clean:
             return {"is_interrupt": False, "needs_clarification": False, "confidence_score": 0.0, "decision": "continue"}
 
-        self._load_model()
+        if not force_keywords:
+            self._load_model()
 
-        if self.use_embeddings and self._model is not None:
+        if not force_keywords and self.use_embeddings and self._model is not None:
             import numpy as np
 
             query_emb = self._model.encode([text_clean], normalize_embeddings=True)[0]

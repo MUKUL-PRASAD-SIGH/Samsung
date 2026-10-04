@@ -5,6 +5,7 @@ import asyncio
 
 import pytest
 
+from agent import clock
 from agent.coordination.idempotency import IdempotencyStore
 from agent.coordination.state_machine import SessionState
 from agent.coordinator import AgentCoordinator
@@ -15,8 +16,20 @@ from agent.fast_path.intent_classifier import IntentClassifier
 from agent.schemas.actions import ActionType
 
 
+def _score_virtual(name):
+    async def go():
+        return score_run(await run_scenario(BY_NAME[name], mode="mock"))
+    return clock.run_virtual(go())
+
+
 async def score(name):
-    return score_run(await run_scenario(BY_NAME[name], mode="mock"))
+    """Run a scenario on a VIRTUAL clock (in a worker thread, because run_virtual owns its own event loop).
+
+    These tests used to run 18 scenarios concurrently in real time on one loop. That made them depend on how fast the
+    machine was: the MiniLM classification of ~20 simultaneous first messages (~5 ms each) delayed the 150 ms-spaced
+    events of rapid_fire_corrections enough to coalesce two of them in the debounce window, which misaligned the scripted
+    LLM and failed the gate. Virtual time makes the gate deterministic and independent of CPU speed."""
+    return await asyncio.to_thread(_score_virtual, name)
 
 
 NON_VOICE = [s.name for s in SUITE if not s.uses_voice]
@@ -25,7 +38,7 @@ NON_VOICE = [s.name for s in SUITE if not s.uses_voice]
 # ------------------------------------------------------------------------- regression gate
 async def test_healthy_agent_scores_high_on_every_scenario():
     # Independent coordinators, so run them concurrently (mock LLM: timing is unaffected).
-    scores = await asyncio.gather(*[score(name) for name in NON_VOICE])
+    scores = [await score(name) for name in NON_VOICE]
     for s in scores:
         assert s.total >= 0.95, f"{s.name}: {s.total:.3f}\n" + "\n".join(s.notes)
         assert s.infra_errors == 0 and not s.timed_out, s.name
@@ -34,7 +47,7 @@ async def test_healthy_agent_scores_high_on_every_scenario():
 
 async def test_healthy_agent_has_no_stale_completions_and_fast_cancels():
     names = ("correction_mid_search", "correction_mid_booking", "stop_command", "rapid_fire_corrections", "explicit_interrupt_signal")
-    for name, s in zip(names, await asyncio.gather(*[score(n) for n in names])):
+    for name, s in zip(names, [await score(n) for n in names]):
         assert s.interrupt.raw["stale_completions"] == 0 and s.interrupt.raw["stale_reruns"] == 0, name
         assert all(x < 0.5 for x in s.interrupt.raw["cancel_latency_s"]), (name, s.interrupt.raw["cancel_latency_s"])
 
@@ -100,7 +113,7 @@ async def test_MUTATION_uncancellable_vision_call_is_caught(monkeypatch):
 
 async def test_healthy_vision_scenarios_including_irrelevant_frame_score_high():
     names = ("vision_extract_arg", "vision_no_frame", "vision_interrupt", "vision_irrelevant_frame")
-    for name, s in zip(names, await asyncio.gather(*[score(n) for n in names])):
+    for name, s in zip(names, [await score(n) for n in names]):
         assert s.total >= 0.95, f"{name}: {s.total:.3f}\n" + "\n".join(s.notes)
 
 
@@ -114,7 +127,7 @@ async def test_MUTATION_slots_not_applied_to_snapshot_is_caught(monkeypatch):
 
 async def test_MUTATION_interrupt_detector_blind_is_caught(monkeypatch):
     blind = {"is_interrupt": False, "needs_clarification": False, "confidence_score": 0.0, "decision": "continue"}
-    monkeypatch.setattr(IntentClassifier, "classify_text", lambda self, text: blind)
+    monkeypatch.setattr(IntentClassifier, "classify_text", lambda self, text, **kw: blind)
 
     s = await score("correction_mid_search")
     assert s.interrupt.parts["cancel_coverage"] == 0.0

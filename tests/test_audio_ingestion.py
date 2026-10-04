@@ -1,13 +1,12 @@
 """Unit and integration tests for raw audio ingestion and ASR processing (§3, §4)."""
 
 import asyncio
-import numpy as np
 import pytest
 from agent.coordinator import AgentCoordinator
 from agent.coordination.tool_router import ToolRouter
 from agent.multimodal.asr import ASRProcessor
-from agent.schemas.events import AudioChunkEvent, InterruptSignalEvent
-from agent.schemas.actions import ActionType, FillerAction, ToolCancelAction
+from agent.schemas.events import AudioChunkEvent
+from agent.schemas.actions import ActionType, FillerAction
 from agent.llm_client import MockLLMBackend
 
 

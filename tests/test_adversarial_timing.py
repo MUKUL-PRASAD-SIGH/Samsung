@@ -13,7 +13,7 @@ from agent.coordinator import AgentCoordinator
 from agent.coordination.tool_router import ToolRouter
 from agent.coordination.fault_injection import FaultInjectedToolHandler, FaultInjectionConfig
 from agent.schemas.events import UserTextEvent, InterruptSignalEvent
-from agent.schemas.actions import ToolCallAction, ToolCancelAction, ActionType
+from agent.schemas.actions import ToolCancelAction, ActionType
 
 
 @pytest.mark.asyncio

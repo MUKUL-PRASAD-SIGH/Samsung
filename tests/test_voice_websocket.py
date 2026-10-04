@@ -82,7 +82,7 @@ def test_streaming_pcm_over_websocket_yields_activity_partials_and_final(client)
         audio = _pcm("book_flight.wav")
         for i in range(0, len(audio), 3200):
             ws.send_bytes(audio[i:i + 3200])
-            time.sleep(0.03)
+            time.sleep(0.1)      # real-time pace, like the browser: faster than that and the final can beat every partial on a slow CPU
         seen = reader.until(lambda m: m["action_type"] == "transcript" and not m["is_partial"])
 
         states = [m["state"] for m in seen if m["action_type"] == "voice_activity"]

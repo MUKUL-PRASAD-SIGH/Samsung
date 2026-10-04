@@ -14,9 +14,9 @@ from agent.coordination.tool_router import ToolRouter
 from agent.coordinator import FRAMES_PER_SESSION, MAX_FRAME_AGE_S, AgentCoordinator
 from agent.llm_client import LLMResponse, MockLLMBackend
 from agent.multimodal.vision import (
-    MAX_FRAME_BYTES, MockVisionBackend, OpenRouterVisionBackend, VisionBackend, VisionError, VisionResult,
+    MAX_FRAME_BYTES, MockVisionBackend, OpenRouterVisionBackend, VisionBackend, VisionError,
 )
-from agent.schemas.actions import ActionType, SpokenResponseAction, ToolCancelAction, ToolCallAction
+from agent.schemas.actions import SpokenResponseAction, ToolCancelAction, ToolCallAction
 from agent.schemas.events import InterruptSignalEvent, UserTextEvent, VideoFrameEvent
 
 

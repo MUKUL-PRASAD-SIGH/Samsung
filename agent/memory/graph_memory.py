@@ -11,7 +11,6 @@ incompatible with "jump to an arbitrary earlier turn").
 from __future__ import annotations
 
 import itertools
-import time
 from agent import clock
 import uuid
 from dataclasses import dataclass, field

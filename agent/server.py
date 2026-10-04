@@ -12,17 +12,23 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from typing import Dict, Optional, Set
+import time
+import uuid
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 import base64
 import os
 from agent.coordinator import AgentCoordinator
 from agent.warmup import run_full_warmup
 from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent, VideoFrameEvent
-from agent.schemas.actions import BaseAction
 from agent.multimodal.tts import get_tts_backend
+from agent import metrics, security
+from agent.logging_setup import epoch_var, request_id_var, session_id_var, setup_logging
+from agent.settings import get_settings
 from agent.trace_logger import TraceLogger
 
 logger = logging.getLogger("agent.server")
@@ -48,6 +54,26 @@ INBOX_MAX = 2000
 # ~5 min of 16kHz mono PCM16 streaming audio, or a very generous single push-to-talk recording.
 MAX_BINARY_FRAME_BYTES = 10 * 1024 * 1024
 
+# Phase G: abuse protection state (see agent/security.py and agent/settings.py)
+_limiter: Optional[security.ConnectionLimiter] = None
+_last_warmup: float = 0.0
+PROTECTED_HTTP = ("/warmup", "/metrics")
+VIOLATIONS_BEFORE_DISCONNECT = 50
+
+
+def _conn_limiter() -> security.ConnectionLimiter:
+    global _limiter
+    limit = get_settings().max_connections_per_ip
+    if _limiter is None or _limiter.limit != limit:
+        _limiter = security.ConnectionLimiter(limit)
+    return _limiter
+
+
+def reset_runtime_state() -> None:
+    """Forget rate-limit state (tests, config reloads)."""
+    global _limiter, _last_warmup
+    _limiter, _last_warmup = None, 0.0
+
 
 async def _dispatch_actions_loop() -> None:
     while True:
@@ -64,6 +90,11 @@ async def _dispatch_actions_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    cfg = get_settings()
+    setup_logging(cfg.log_format, cfg.log_level)
+    logger.info("Starting with settings: %s", cfg.describe())
+    for warning in cfg.warnings():
+        logger.warning(warning)
     _subscribers.clear()
     dispatcher = asyncio.create_task(_dispatch_actions_loop())
     await coordinator.start()
@@ -80,28 +111,122 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Interruptible Real-Time Agent", version="1.0.0", lifespan=lifespan)
 
 
+_cfg0 = get_settings()
+if _cfg0.allowed_origins:     # an explicit allow-list also governs cross-origin browser calls to the HTTP endpoints
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"] if "*" in _cfg0.allowed_origins else _cfg0.allowed_origins,
+        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+@app.middleware("http")
+async def protect_and_tag(request: Request, call_next):
+    """Request id, bearer-token gate for the sensitive endpoints, and basic security headers."""
+    cfg = get_settings()
+    rid = request.headers.get("x-request-id", "")
+    rid = rid if rid.isalnum() and len(rid) <= 64 else uuid.uuid4().hex[:16]
+    token = request_id_var.set(rid)
+    try:
+        path = request.url.path
+        if path in PROTECTED_HTTP and not security.token_ok(
+                security.bearer_token(request.headers, request.query_params), cfg):
+            metrics.REJECTED.inc(reason="auth")
+            response = JSONResponse({"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"})
+        else:
+            response = await call_next(request)
+        response.headers["X-Request-ID"] = rid
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
+    finally:
+        request_id_var.reset(token)
+
+
 @app.post("/warmup")
 async def warmup():
-    """Run the full warm-up (every model, incl. one tiny LLM request) and return per-stage timings (§7.7)."""
+    """Run the full warm-up (every model, incl. one tiny LLM request) and return per-stage timings (§7.7).
+    It spends LLM tokens, so it is rate limited."""
+    global _last_warmup
+    cfg, now = get_settings(), time.monotonic()
+    wait = cfg.warmup_min_interval_s - (now - _last_warmup)
+    if _last_warmup and wait > 0:
+        metrics.REJECTED.inc(reason="rate_limit")
+        return JSONResponse({"error": "warmup was run recently", "retry_after_s": round(wait, 1)},
+                            status_code=429, headers={"Retry-After": str(int(wait) + 1)})
+    _last_warmup = now
     return await run_full_warmup(coordinator, include_llm=True)
 
 
+@app.get("/metrics", response_class=PlainTextResponse)
+async def metrics_endpoint():
+    """Prometheus text exposition (agent_* series)."""
+    if not get_settings().metrics_enabled:
+        return PlainTextResponse("metrics disabled\n", status_code=404)
+    metrics.SESSIONS.set(len(coordinator.sessions))
+    metrics.TRACE_DROPPED.set(coordinator.trace_logger.dropped_count)
+    return PlainTextResponse(metrics.REGISTRY.render(), media_type="text/plain; version=0.0.4")
+
+
 @app.get("/health")
-async def health():
-    return {
-        "status": "ok",
+async def health(request: Request):
+    cfg = get_settings()
+    body = {"status": "ok"}
+    if cfg.auth_token and not security.token_ok(security.bearer_token(request.headers, request.query_params), cfg):
+        return body     # unauthenticated callers (load balancers) only learn that the process is up
+    body.update({
         "sessions": len(coordinator.sessions),
         "asr": coordinator.asr_processor.info(),
         "warmup": getattr(coordinator, "warmup_report", None),
         "tts": {"available": coordinator.tts_backend is not None, "backend": getattr(coordinator.tts_backend, "name", None)},
         "trace_dropped_records": coordinator.trace_logger.dropped_count,
-    }
+    })
+    return body
 
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    cfg = get_settings()
+    ip = security.client_ip(websocket.client.host if websocket.client else None, websocket.headers, cfg)
+
+    # Refuse before accepting (the browser sees a failed handshake and no session is created). Order: cheapest and
+    # most clearly hostile first.
+    refusal = None
+    if not security.valid_session_id(session_id, cfg):
+        refusal = "session_id"
+    elif not security.origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host"), cfg):
+        refusal = "origin"
+    elif not security.token_ok(security.bearer_token(websocket.headers, websocket.query_params), cfg):
+        refusal = "auth"
+    elif session_id not in coordinator.sessions and len(coordinator.sessions) >= cfg.max_sessions:
+        refusal = "session_limit"
+    elif not _conn_limiter().acquire(ip):
+        refusal = "ip_limit"
+    if refusal:
+        metrics.REJECTED.inc(reason=refusal)
+        logger.warning("Refused WebSocket from %s for session %r: %s", ip, session_id[:40], refusal)
+        await websocket.close(code=1013 if refusal in ("session_limit", "ip_limit") else 1008)
+        return
+
     await websocket.accept()
+    metrics.WS_CONNECTIONS.inc()
+    session_id_var.set(session_id)
     session = coordinator.get_or_create_session(session_id)
+    epoch_var.set(session.epoch)
+    msg_bucket = security.TokenBucket(cfg.msg_rate_per_s, cfg.msg_burst)
+    audio_bucket = security.TokenBucket(cfg.audio_bytes_per_s, cfg.audio_burst_bytes)
+    violations = 0
+
+    async def reject(code: str) -> bool:
+        """Drop one message and tell the client why. Returns True if the connection should now be closed."""
+        nonlocal violations
+        violations += 1
+        metrics.REJECTED.inc(reason=code)
+        try:
+            await websocket.send_text(json.dumps({"type": "error", "code": code}))
+        except Exception:  # noqa: BLE001 - the socket may already be gone
+            pass
+        return violations >= VIOLATIONS_BEFORE_DISCONNECT
 
     inbox: asyncio.Queue = asyncio.Queue(maxsize=INBOX_MAX)
     _subscribers.setdefault(session_id, set()).add(inbox)
@@ -130,6 +255,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             if message.get("type") == "websocket.disconnect":
                 break
             if "bytes" in message and message["bytes"]:
+                if not audio_bucket.allow(len(message["bytes"])):
+                    if await reject("rate_limit"):
+                        await websocket.close(code=1008)
+                        break
+                    continue
                 if len(message["bytes"]) > MAX_BINARY_FRAME_BYTES:
                     # Guards the ASR pipeline's own audio buffers, not the socket itself -- Starlette
                     # has already buffered the frame in memory by the time we can see its size (gap #9).
@@ -158,7 +288,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         )
                     )
             elif "text" in message and message["text"]:
-                data = json.loads(message["text"])
+                if len(message["text"]) > cfg.max_text_message_bytes:
+                    if await reject("too_large"):
+                        await websocket.close(code=1009)
+                        break
+                    continue
+                if not msg_bucket.allow():
+                    if await reject("rate_limit"):
+                        await websocket.close(code=1008)
+                        break
+                    continue
+                try:
+                    data = json.loads(message["text"])
+                except ValueError:
+                    if await reject("bad_json"):
+                        await websocket.close(code=1008)
+                        break
+                    continue
+                if not isinstance(data, dict):
+                    continue
                 event_type = data.get("type", "user_text")
 
                 if event_type == "interrupt":
@@ -216,12 +364,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         )
                     )
                 else:
-                    await coordinator.post_event(
-                        UserTextEvent(
-                            session_id=session_id,
-                            text=data.get("text", ""),
-                        )
-                    )
+                    text = data.get("text", "")
+                    if not isinstance(text, str) or len(text) > cfg.max_user_text_chars:
+                        if await reject("too_large"):
+                            await websocket.close(code=1009)
+                            break
+                        continue
+                    await coordinator.post_event(UserTextEvent(session_id=session_id, text=text))
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for session %s", session_id)
     finally:
@@ -231,6 +380,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 AudioChunkEvent(session_id=session_id, streaming=True, stream_control="stop", format="pcm_16khz")
             )
         forwarder_task.cancel()
+        metrics.WS_CONNECTIONS.inc(-1)
+        _conn_limiter().release(ip)
         subscribers = _subscribers.get(session_id)
         if subscribers is not None:
             subscribers.discard(inbox)

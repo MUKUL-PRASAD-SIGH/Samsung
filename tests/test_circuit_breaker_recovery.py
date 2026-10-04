@@ -21,6 +21,10 @@ class ScriptedBackend(LLMBackend):
         step = self.script.pop(0) if self.script else "ok"
         if step == "slow":
             await asyncio.sleep(1.0)
+        else:
+            # A real provider call always suspends. Without this, Python 3.12's inline wait_for lets an instant fake
+            # finish (and close the breaker) before any concurrent caller runs, so "concurrent" probes never overlap.
+            await asyncio.sleep(0.01)
         if isinstance(step, Exception):
             raise step
         return LLMResponse(response_type="spoken_response", content="real answer")

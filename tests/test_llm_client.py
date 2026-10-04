@@ -7,7 +7,6 @@ from agent.llm_client import (
     LLMResponse,
     LLMConfig,
     CircuitBreakerLLMClient,
-    MockLLMBackend,
 )
 
 
@@ -31,7 +30,7 @@ async def test_circuit_breaker_timeout_fallback():
     assert client.is_circuit_open is False
 
     # Second attempt: trips consecutive timeouts -> opens circuit breaker
-    resp2 = await client.generate([{"role": "user", "content": "hi again"}])
+    await client.generate([{"role": "user", "content": "hi again"}])
     assert client.consecutive_timeouts == 2
     assert client.is_circuit_open is True
 
@@ -126,7 +125,7 @@ async def test_openrouter_live_tool_calling():
 
 
 def test_backend_selection_prefers_groq_over_openrouter(monkeypatch):
-    from agent.llm_client import get_backend, GroqBackend, OpenRouterBackend, LocalQwenBackend
+    from agent.llm_client import get_backend, GroqBackend
 
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")

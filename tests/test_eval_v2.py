@@ -10,7 +10,7 @@ import pytest
 
 from agent.eval.report import FLAKY_STD, aggregate_runs, generalization_gap
 from agent.eval.runner import run_scenario
-from agent.eval.scenario import ExpectedCall, Scenario, Step
+from agent.eval.scenario import Scenario, Step
 from agent.eval.scenarios import say, tool
 from agent.eval.scorer import CategoryScore, _unbacked_claims, score_run
 from agent.eval.suites import ALL, BY_NAME, DEV as SUITE, HOLDOUT
@@ -32,7 +32,9 @@ def test_holdout_is_separate_from_dev_and_well_formed():
 
 
 async def test_holdout_mock_gate_every_scenario_clean():
-    names = [s.name for s in HOLDOUT if not s.uses_voice]
+    from agent.fast_path.intent_classifier import embeddings_enabled
+
+    names = [s.name for s in HOLDOUT if not s.uses_voice and (embeddings_enabled() or "needs_embeddings" not in s.tags)]
     scores = await asyncio.gather(*[score(BY_NAME[n]) for n in names])
     for s in scores:
         assert s.total >= 0.95, f"{s.name}: {s.total:.3f}\n" + "\n".join(s.notes)
@@ -138,3 +140,29 @@ def test_cli_runs_n_times_and_reports_variance():
     )
     assert out.returncode == 0, out.stderr[-500:]
     assert "VARIANCE over 2 run(s)" in out.stdout and "ho_stop_mid_booking" in out.stdout and "flaky scenarios: none" in out.stdout
+
+
+def test_ci_gate_passes_a_healthy_suite_and_fails_a_broken_one():
+    import dataclasses
+
+    from agent.eval.__main__ import gate
+
+    good = [asyncio.run(score(BY_NAME["flight_search"])), asyncio.run(score(BY_NAME["book_flight"]))]
+    assert gate([good], 97, 95) == []
+    broken = [dataclasses.replace(good[0], total=0.80), good[1]]
+    problems = gate([good, broken], 97, 95)
+    assert any("run 2" in p and "flight_search" in p for p in problems) and not any(p.startswith("run 1") for p in problems)
+    dup = dataclasses.replace(good[1], safety=CategoryScore(0.5, raw={"duplicate_state_changes": 1, "invalid_payloads": 0, "trace_violations": 0}))
+    assert any("duplicate_state_changes" in p for p in gate([[good[0], dup]], 90, 50))
+
+
+def test_cli_exit_code_follows_the_gate():
+    import os
+
+    env = {**os.environ, "INTENT_EMBEDDINGS": "0"}
+    ok = subprocess.run([sys.executable, "-m", "agent.eval", "--llm", "mock", "--virtual", "--only", "flight_search", "--quiet", "--fail-under", "90"],
+                        capture_output=True, text=True, timeout=120, env=env)
+    bad = subprocess.run([sys.executable, "-m", "agent.eval", "--llm", "mock", "--virtual", "--only", "flight_search", "--quiet", "--fail-under", "100.1"],
+                         capture_output=True, text=True, timeout=120, env=env)
+    assert ok.returncode == 0 and "GATE PASSED" in ok.stdout
+    assert bad.returncode == 1 and "GATE FAILED" in bad.stdout

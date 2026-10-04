@@ -1,6 +1,6 @@
 """Equivalent requests must compare equal, or a re-phrased duplicate books twice."""
 
-from agent.coordination.canonical import canonical_mapping, canonical_value
+from agent.coordination.canonical import canonical_value
 from agent.coordination.idempotency import IdempotencyStore
 from agent.coordination.state_machine import SessionState
 

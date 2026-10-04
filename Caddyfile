@@ -1,0 +1,6 @@
+# Reverse proxy with automatic HTTPS (Let's Encrypt). WebSockets (/ws/...) are proxied transparently.
+# Run the app with TRUST_PROXY=1 so per-IP limits see the real client address.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:8000
+}

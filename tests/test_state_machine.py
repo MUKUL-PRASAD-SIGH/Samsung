@@ -3,8 +3,7 @@
 import asyncio
 import pytest
 from agent.coordination.state_machine import SessionState
-from agent.coordination.idempotency import IdempotencyStore
-from agent.schemas.actions import ToolCancelAction, ToolCallAction
+from agent.schemas.actions import ToolCancelAction
 
 
 @pytest.mark.asyncio
@@ -56,8 +55,9 @@ async def test_epoch_bump_cancels_stale_calls():
     assert cancel.epoch == 2
     assert cancel.reason == "user_changed_mind"
 
-    # Background task must be cancelled
-    assert task.cancelled() or task.cancelling()
+    # Background task must be cancelled. (Task.cancelling() only exists on 3.11+, so let the cancellation land and look.)
+    await asyncio.sleep(0)
+    assert task.cancelled()
     assert session.in_flight_calls["call_001"].status == "cancelled"
     # No pending calls in active snapshot list
     assert len(session.get_snapshot().in_flight_calls) == 0

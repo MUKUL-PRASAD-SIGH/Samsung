@@ -6,7 +6,6 @@ Skipped automatically when the Whisper model can't be loaded (e.g. offline with 
 import asyncio
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from agent.coordinator import AgentCoordinator

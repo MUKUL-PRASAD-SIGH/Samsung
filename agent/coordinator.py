@@ -13,19 +13,18 @@ import asyncio
 import logging
 import os
 import re
-import time
-from agent import clock
+from agent import clock, metrics
+from agent.logging_setup import epoch_var, session_id_var
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Deque, Dict, List, Optional, Set, Tuple
+from typing import Any, Coroutine, Deque, Dict, List, Optional, Set, Tuple
 
 from agent.schemas.events import (
     BaseEvent,
     EventType,
     UserTextEvent,
     AudioChunkEvent,
-    InterruptSignalEvent,
     ToolResultEvent,
     VideoFrameEvent,
 )
@@ -36,8 +35,6 @@ from agent.schemas.actions import (
     ClarificationAction,
     ActionType,
     ToolCallAction,
-    ToolCancelAction,
-    StateSnapshotAction,
     GraphUpdateAction,
     TranscriptAction,
     VoiceActivityAction,
@@ -51,7 +48,7 @@ from agent.tool_summaries import summarize_tool_result, summarize_tool_error
 from agent.fast_path.templates import generate_filler
 from agent.fast_path.intent_classifier import IntentClassifier, embeddings_enabled
 from agent.slow_path.planner import Planner
-from agent.llm_client import MockLLMBackend, LLMBackend, get_backend, LLMConfig
+from agent.llm_client import LLMBackend, get_backend, LLMConfig
 from agent.multimodal.asr import ASRProcessor
 from agent.multimodal.tts import TTSBackend
 from agent.speech import SessionSpeaker, is_substantial
@@ -150,6 +147,10 @@ class AgentCoordinator:
         self.llm_backend = llm_backend or get_backend(LLMConfig())
         self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
         self.tts_backend = tts_backend
+        self._classifier_loading: Optional[asyncio.Future] = None
+        # session_id -> [t_event, ack_observed, cancel_observed]: when the last user_text/interrupt arrived, so the
+        # first acknowledgement and the first cancellation it causes can be timed (agent_first_ack_seconds etc.)
+        self._reaction: Dict[str, List[Any]] = {}
         self._speakers: Dict[str, SessionSpeaker] = {}   # session_id -> its voice (only for sessions that opted in)
         self.warmup_report: Optional[Dict[str, Any]] = None  # filled by agent.warmup.run_full_warmup
         self.asr_processor = asr_processor or ASRProcessor()
@@ -201,6 +202,7 @@ class AgentCoordinator:
             self._audio_buffers.pop(sid, None)
             self._frames.pop(sid, None)
             self._voice.pop(sid, None)
+            self._reaction.pop(sid, None)
             speaker = self._speakers.pop(sid, None)
             if speaker is not None:
                 speaker.close()
@@ -268,14 +270,26 @@ class AgentCoordinator:
         self.trace_logger.log_event(event)
         if event.session_id in self.sessions:
             self.sessions[event.session_id].touch()
+        metrics.EVENTS.inc(type=event.event_type.value)
         if event.event_type == EventType.USER_TEXT and getattr(event, "text", "").strip():
             self._stop_speech(event.session_id, "user_spoke")   # don't wait out the debounce window to go quiet
+        if event.event_type in (EventType.USER_TEXT, EventType.INTERRUPT_SIGNAL):
+            self._reaction[event.session_id] = [clock.monotonic(), False, False]
         await self.event_queue.put(event)
 
     async def emit_action(self, action: BaseAction) -> None:
         """Outbound interface: Put an action onto the Action Queue after trace validation."""
         self.trace_logger.log_action(action)
         await self.action_queue.put(action)
+        metrics.ACTIONS.inc(type=action.action_type.value)
+        react = self._reaction.get(action.session_id)
+        if react is not None:
+            if action.action_type == ActionType.FILLER and not react[1]:
+                react[1] = True
+                metrics.FIRST_ACK.observe(clock.monotonic() - react[0])
+            elif action.action_type == ActionType.TOOL_CANCEL and not react[2]:
+                react[2] = True
+                metrics.CANCEL_LATENCY.observe(clock.monotonic() - react[0])
         if action.action_type in _SPOKEN_TYPES:
             speaker = self._speakers.get(action.session_id)
             if speaker is not None and speaker.enabled:
@@ -299,6 +313,20 @@ class AgentCoordinator:
         if not enabled:
             speaker.stop("tts_disabled")
         return enabled
+
+    async def _classify(self, text: str) -> Dict[str, Any]:
+        """Tier-1 classification that never waits for the model. Until MiniLM has loaded (seconds after startup) it
+        answers with the keyword heuristic and finishes the load in the background: the fast-path acknowledgement
+        must not be held up by an import, and a stalled event loop would delay exactly the interrupts it exists for."""
+        clf = self.intent_classifier
+        if getattr(clf, "ready", True):
+            # Inline on purpose: ~5 ms of CPU, and it must NOT yield. Turn handlers for events 150 ms apart run as separate
+            # tasks; a thread hop here lets a later correction finish classification first, reorder the epoch bumps, and
+            # make the stale plan win (found by rapid_fire_corrections: it booked "Boston" instead of "Chicago").
+            return clf.classify_text(text)
+        if self._classifier_loading is None or self._classifier_loading.done():
+            self._classifier_loading = asyncio.ensure_future(clf.aload())
+        return clf.classify_text(text, force_keywords=True)
 
     def _stop_speech(self, session_id: str, reason: str) -> None:
         speaker = self._speakers.get(session_id)
@@ -377,6 +405,8 @@ class AgentCoordinator:
     async def _handle_event(self, event: BaseEvent) -> None:
         """Route event according to type."""
         session = self.get_or_create_session(event.session_id)
+        session_id_var.set(session.session_id)      # structured logs carry the session/epoch being handled
+        epoch_var.set(session.epoch)
 
         if event.event_type == EventType.INTERRUPT_SIGNAL:
             await self._handle_interrupt(session, reason=getattr(event, "reason", "interrupt_signal"))
@@ -564,7 +594,7 @@ class AgentCoordinator:
             # evidence to persist for two consecutive substantial partials: one stray fragment could be a mangled piece
             # of our own voice (ASR hallucinates on playback audio), and a user who is really talking over us keeps
             # producing partials every ~0.5 s. The client has already ducked the volume in the meantime.
-            if self.intent_classifier.classify_text(text)["decision"] != "continue":
+            if (await self._classify(text))["decision"] != "continue":
                 evidence = 2
             elif is_substantial(text):
                 evidence = runtime.talkover.get(ev.utterance_id, 0) + 1
@@ -603,10 +633,11 @@ class AgentCoordinator:
             return
         if not any(c.status in ("pending", "running") for c in session.in_flight_calls.values()):
             return
-        if not self.intent_classifier.classify_text(text)["is_interrupt"]:
+        if not (await self._classify(text))["is_interrupt"]:
             return
 
         runtime.barge_in_fired.add(utterance_id)
+        self._reaction[session.session_id] = [clock.monotonic(), True, False]   # the partial that revealed the barge-in
         cancellations = session.bump_epoch(reason=f"voice_barge_in: {text}")
         for cancel_action in cancellations:
             await self.emit_action(cancel_action)
@@ -754,7 +785,7 @@ class AgentCoordinator:
                 return
             # anything else: the user moved on; handle this text normally
 
-        classification = self.intent_classifier.classify_text(event.text)
+        classification = await self._classify(event.text)
         self.trace_logger.log_classification(session.session_id, event.text, classification, clock.now())
         is_interrupt = classification["is_interrupt"] or event.barge_in_handled or forced_interrupt
 

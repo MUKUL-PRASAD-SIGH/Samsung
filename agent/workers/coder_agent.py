@@ -6,9 +6,8 @@ and delivers live code artifacts to the workspace.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, Callable, Coroutine, Dict, Optional
+from typing import Any, Callable, Coroutine, Dict
 
 from agent.schemas.actions import AgentStepAction
 from agent.workers.base import BaseAgentWorker
@@ -100,7 +99,7 @@ class CoderAgent(BaseAgentWorker):
 
         # Step 2: Logic and hook structure
         await self.emit_step(
-            thought=f"Setting up state hooks, London timezone clock logic, and interval handlers...",
+            thought="Setting up state hooks, London timezone clock logic, and interval handlers...",
             step_number=2,
             status="working",
             step_callback=step_callback,
@@ -109,7 +108,7 @@ class CoderAgent(BaseAgentWorker):
 
         # Step 3: Synthesis of JSX and dial math
         await self.emit_step(
-            thought=f"Synthesizing dial markers, rotational transforms, and styling classes...",
+            thought="Synthesizing dial markers, rotational transforms, and styling classes...",
             step_number=3,
             status="working",
             step_callback=step_callback,

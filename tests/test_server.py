@@ -1,6 +1,5 @@
 """Tests for FastAPI server and WebSocket full-duplex communication."""
 
-import pytest
 from starlette.testclient import TestClient
 from agent.server import app
 

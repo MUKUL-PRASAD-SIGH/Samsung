@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import time
 from agent import clock
 import uuid
 from enum import Enum

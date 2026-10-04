@@ -15,7 +15,7 @@ from agent.fast_path.intent_classifier import IntentClassifier
 from agent.fast_path.templates import generate_filler
 from agent.multimodal.asr import ASRProcessor
 from agent.multimodal.vision import get_vision_backend
-from agent.llm_client import LLMBackend, LLMConfig, get_backend
+from agent.llm_client import LLMBackend
 
 logger = logging.getLogger("agent.warmup")
 

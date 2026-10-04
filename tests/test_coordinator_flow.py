@@ -4,12 +4,10 @@ import asyncio
 import pytest
 from agent.coordinator import AgentCoordinator
 from agent.coordination.tool_router import ToolRouter
-from agent.schemas.events import UserTextEvent, InterruptSignalEvent
+from agent.schemas.events import InterruptSignalEvent
 from agent.schemas.actions import (
     ActionType,
-    ToolCallAction,
     ToolCancelAction,
-    StateSnapshotAction,
 )
 
 

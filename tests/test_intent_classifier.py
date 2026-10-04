@@ -1,6 +1,5 @@
 """Tests for Tier 1 IntentClassifier and confidence-gated interrupt detection (§7.2)."""
 
-import pytest
 from agent.fast_path.intent_classifier import IntentClassifier
 
 

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.coordination.canonical import canonical_mapping
 from agent.eval.environment import ExecRecord
 from agent.eval.runner import RunRecord, StepTiming
-from agent.eval.scenario import Acceptable, ExpectedCall, Scenario
+from agent.eval.scenario import Acceptable
 
 WEIGHTS = {"task": 0.40, "interrupt": 0.35, "latency": 0.15, "safety": 0.10}
 

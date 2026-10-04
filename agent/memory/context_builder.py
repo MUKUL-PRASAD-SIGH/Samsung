@@ -10,7 +10,7 @@ that original stateless behavior so nothing regresses.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 if TYPE_CHECKING:
     from agent.coordination.state_machine import SessionState

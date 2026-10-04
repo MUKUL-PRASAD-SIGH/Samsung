@@ -1,6 +1,7 @@
 """Guard: API keys must never appear in tracked files (keys live in the gitignored .env)."""
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -36,5 +37,7 @@ def test_no_api_keys_in_tracked_files():
 
 
 def test_env_file_is_gitignored():
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
     result = subprocess.run(["git", "check-ignore", ".env"], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, ".env must be gitignored"

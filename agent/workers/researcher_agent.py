@@ -5,10 +5,9 @@ Executes multi-step flight, hotel, and itinerary market research.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from typing import Any, Callable, Coroutine, Dict, Optional
+from typing import Any, Callable, Coroutine, Dict
 
 from agent.schemas.actions import AgentStepAction
 from agent.workers.base import BaseAgentWorker
@@ -62,7 +61,7 @@ class ResearcherAgent(BaseAgentWorker):
 
         # Step 2: Normalize and filter
         await self.emit_step(
-            thought=f"Aggregated 14 flight candidates. Normalizing fare classes and on-time performance...",
+            thought="Aggregated 14 flight candidates. Normalizing fare classes and on-time performance...",
             step_number=2,
             status="working",
             step_callback=step_callback,
@@ -87,7 +86,7 @@ class ResearcherAgent(BaseAgentWorker):
         }
 
         await self.emit_step(
-            thought=f"Optimal fare ranking compiled. IndiGo 6E-455 is lowest tariff ($145).",
+            thought="Optimal fare ranking compiled. IndiGo 6E-455 is lowest tariff ($145).",
             step_number=3,
             status="completed",
             artifact=artifact,

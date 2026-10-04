@@ -4,11 +4,9 @@ import asyncio
 import pytest
 from agent.workers.coder_agent import CoderAgent
 from agent.workers.researcher_agent import ResearcherAgent
-from agent.workers.validator_agent import ValidatorAgent
-from agent.workers.registry import create_agent_worker
 from agent.schemas.actions import ActionType, AgentStepAction, ToolCancelAction
 from agent.coordinator import AgentCoordinator
-from agent.schemas.events import UserTextEvent, InterruptSignalEvent
+from agent.schemas.events import InterruptSignalEvent
 
 
 @pytest.mark.asyncio

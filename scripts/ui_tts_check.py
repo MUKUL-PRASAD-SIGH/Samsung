@@ -5,7 +5,7 @@ Turns the speaker button on, asks for a reply, checks audio was scheduled in the
 the agent is talking and reports how fast the server stopped the speech and that the page really stopped its sources.
 Run:  python scripts/ui_tts_check.py
 """
-import asyncio, json, time
+import asyncio
 from playwright.async_api import async_playwright
 
 INSTR = """
@@ -43,7 +43,7 @@ async def main():
         await page.wait_for_timeout(1500)
         print("PAGE TEXT:", (await page.inner_text("body"))[:500].replace("\n"," | "))
         print("ws log:", await page.evaluate("window.__ws.length"))
-        t0 = time.time()
+        # (timing is reported from the page clock below)
         for _ in range(60):
             await page.wait_for_timeout(250)
             n = await page.evaluate("window.__audio.started.length")

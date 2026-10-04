@@ -5,9 +5,8 @@ Executes multi-step static analysis, linting, and schema verification.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, Callable, Coroutine, Dict, Optional
+from typing import Any, Callable, Coroutine, Dict
 
 from agent.schemas.actions import AgentStepAction
 from agent.workers.base import BaseAgentWorker
@@ -47,7 +46,7 @@ class ValidatorAgent(BaseAgentWorker):
 
         # Step 1: AST and hook rules
         await self.emit_step(
-            thought=f"Parsing component AST and validating React 18 strict mode hook dependencies...",
+            thought="Parsing component AST and validating React 18 strict mode hook dependencies...",
             step_number=1,
             status="working",
             step_callback=step_callback,
@@ -56,7 +55,7 @@ class ValidatorAgent(BaseAgentWorker):
 
         # Step 2: Certification
         await self.emit_step(
-            thought=f"Zero lint warnings found. Clean prop contracts verified.",
+            thought="Zero lint warnings found. Clean prop contracts verified.",
             step_number=2,
             status="completed",
             step_callback=step_callback,

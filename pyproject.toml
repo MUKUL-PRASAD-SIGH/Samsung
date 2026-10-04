@@ -8,26 +8,31 @@ dependencies = [
     "pydantic>=2.0",
     "jsonschema>=4.0",
     "fastapi>=0.100.0",
-    "uvicorn>=0.20.0",
+    "uvicorn[standard]>=0.20.0",     # [standard] brings `websockets`: without it /ws/{session_id} cannot be served
     "python-dotenv>=1.0",
     "numpy>=1.24",
     "faster-whisper>=1.0",
-    "av>=11.0",
+    "av>=11.0,<19",                  # faster-whisper 1.2.x calls av.open(metadata_errors=...), which av 19 removed: ASR silently returned ""
     "onnxruntime>=1.17",
 ]
 
 [project.optional-dependencies]
 # Tier-1 semantic intent classification (§7.2); falls back to keyword heuristics if absent.
 embeddings = ["sentence-transformers>=2.5"]
-# Local/offline LLM serving tooling for the LocalQwenBackend's own server process.
 # Local spoken output (Phase C): Piper TTS. Also needs the voice file, see .env.example.
 tts = ["piper-tts>=1.3"]
+# Local/offline LLM serving tooling for the LocalQwenBackend's own server process.
 local = ["vllm>=0.4", "transformers>=4.40"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "pillow"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "pillow", "httpx>=0.24", "tomli>=2; python_version < '3.11'"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# Only the agent package is code. Without this, setuptools sees `agent`, `frontend` and `eval_results` as a flat layout
+# with several top-level packages and refuses to build, which breaks `pip install -e .` on a fresh clone.
+include = ["agent*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -37,3 +42,16 @@ addopts = "-m 'not live'"
 markers = [
     "live: talks to a real network service; excluded by default (skipped/flaky offline or under rate limits), run with `pytest -m live`.",
 ]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+extend-exclude = ["frontend", "models", ".venv"]
+
+[tool.ruff.lint]
+# Correctness only: syntax errors and pyflakes (undefined names, unused imports/variables, ...). Style rules are not
+# gated; the point of CI lint is to catch a module that no test imports (it has happened: a SyntaxError shipped).
+select = ["E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

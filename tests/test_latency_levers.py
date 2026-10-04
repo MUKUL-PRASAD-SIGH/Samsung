@@ -6,7 +6,7 @@ import numpy as np
 
 from agent import clock
 from agent.llm_client import CircuitBreakerLLMClient, LLMBackend, LLMConfig, LLMResponse, _usage
-from agent.multimodal.streaming import FRAME_MS, VoiceConfig, VoiceStream, endpoint_hint_ms
+from agent.multimodal.streaming import VoiceConfig, VoiceStream, endpoint_hint_ms
 
 
 class _Slow(LLMBackend):
@@ -170,7 +170,7 @@ def test_tail_partial_fires_once_after_speech_stops_and_is_marked_reusable():
 async def _final_with(is_tail, pcm_len=32000):
     """Drive _voice_final with a stub ASR; returns (text posted, ASR calls)."""
     from agent.coordinator import AgentCoordinator, _VoiceRuntime
-    from agent.multimodal.streaming import PartialDue, UtteranceEnd
+    from agent.multimodal.streaming import UtteranceEnd
 
     c = AgentCoordinator()
     calls = []

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-import time
 from agent import clock
 from agent.coordination.slot_validation import SlotPatchError, validate_patch, validate_state
 from typing import Any, Dict, List, Optional, TYPE_CHECKING

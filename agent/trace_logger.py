@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import jsonschema
 
-from agent.schemas.actions import BaseAction, ToolCallAction, ToolCancelAction, StateSnapshotAction
+from agent.schemas.actions import BaseAction, ToolCallAction, ToolCancelAction
 from agent.schemas.events import BaseEvent
 
 logger = logging.getLogger("agent.trace")

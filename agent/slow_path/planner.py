@@ -8,15 +8,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from agent.schemas.events import UserTextEvent
 from agent.schemas.actions import (
     BaseAction,
     SpokenResponseAction,
-    ToolCallAction,
     ClarificationAction,
-    StateSnapshotAction,
 )
 from agent.coordination.slot_validation import SlotPatchError
 from agent.coordination.state_machine import SessionState

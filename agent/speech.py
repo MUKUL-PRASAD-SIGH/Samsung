@@ -23,10 +23,10 @@ import difflib
 import logging
 import re
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Deque, List, Optional
 
-from agent import clock
+from agent import clock, metrics
 from agent.multimodal.tts import TTSBackend, split_sentences, spoken_prefix
 from agent.schemas.actions import AudioOutAction, BaseAction, SpeechStateAction
 
@@ -230,6 +230,7 @@ class SessionSpeaker:
                               spoken_ms=round(played * 1000, 1))
             if requested is not None:
                 self.stop_latencies_s.append(clock.monotonic() - requested)
+                metrics.SPEECH_STOP.observe(clock.monotonic() - requested)
             self._queue.clear()
             if self._on_truncated and spoken != item.text:
                 self._on_truncated(item.text, spoken)

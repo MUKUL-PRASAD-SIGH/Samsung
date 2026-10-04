@@ -108,7 +108,7 @@ async def test_aborted_call_entities_never_leak_into_slots():
     session.bump_epoch(reason="user_correction")          # user abandons the pending search
     assert session.scratchpad.entity_candidates == []      # Mumbai discarded with the call
 
-    turn = await _turn(planner, session, "never mind, cancel that", agent_response="Okay, cancelled.")
+    await _turn(planner, session, "never mind, cancel that", agent_response="Okay, cancelled.")
     assert session.slots == {}
     assert "Mumbai" not in str(session.slots)
 

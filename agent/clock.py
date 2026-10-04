@@ -28,6 +28,11 @@ def now() -> float:
     return loop.wall_start + loop.time() if loop is not None else time.time()
 
 
+def is_virtual() -> bool:
+    """True inside run_virtual(): worker threads would see time race ahead, so callers keep work on the loop."""
+    return _virtual_loop is not None
+
+
 def monotonic() -> float:
     loop = _virtual_loop
     return loop.time() if loop is not None else time.monotonic()

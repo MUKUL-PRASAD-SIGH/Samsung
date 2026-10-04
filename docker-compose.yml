@@ -1,0 +1,45 @@
+# docker compose up --build                 # app only, http://localhost:8000 (bound to localhost)
+# DOMAIN=agent.example.com docker compose --profile https up --build -d   # + Caddy: automatic HTTPS (mic/camera need it off localhost)
+#
+# Secrets and tuning come from .env (see .env.example). Set AUTH_TOKEN before exposing this to a network.
+services:
+  app:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LOG_FORMAT: json
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+    ports:
+      - "127.0.0.1:8000:8000"       # change to "8000:8000" only if you are not using the https profile and accept the exposure
+    volumes:
+      - models:/models              # Whisper / MiniLM / Piper cache: survives rebuilds
+      - data:/data                  # trace.jsonl
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    profiles: ["https"]
+    image: caddy:2
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}     # set to the public hostname for a real certificate
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    restart: unless-stopped
+
+volumes:
+  models:
+  data:
+  caddy_data:
