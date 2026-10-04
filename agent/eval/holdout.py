@@ -21,8 +21,8 @@ from agent.eval.scenarios import DEL, say, tool
 
 BLR, CCU = ("Bangalore", "Bengaluru", "BLR"), ("Kolkata", "Calcutta", "CCU")
 MAA, HYD, PNQ, JAI = ("Chennai", "MAA"), ("Hyderabad", "HYD"), ("Pune", "PNQ"), ("Jaipur", "JAI")
-LKO, COK, GOA2 = ("Lucknow", "LKO"), ("Kochi", "Cochin", "COK"), ("Goa", "GOI", "GOX")
-BOM2, DXB, SIN, LHR = ("Mumbai", "BOM"), ("Dubai", "DXB"), ("Singapore", "SIN"), ("London", "LHR")
+COK = ("Kochi", "Cochin", "COK")
+BOM2, LHR = ("Mumbai", "BOM"), ("London", "LHR")
 GOA_FWD = ("Goa", "GOI", "GOX")
 
 _L = 1.0  # short tool latency for the multi-turn scenarios

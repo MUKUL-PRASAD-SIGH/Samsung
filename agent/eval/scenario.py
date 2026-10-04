@@ -55,13 +55,5 @@ class Scenario:
     max_s: float = 25.0                                                    # scenario wall-clock cap
 
     @property
-    def has_interrupts(self) -> bool:
-        return any(s.interrupts for s in self.steps)
-
-    @property
-    def uses_vision(self) -> bool:
-        return any(s.kind == "frame" for s in self.steps) or "vision" in self.tags
-
-    @property
     def uses_voice(self) -> bool:
         return any(s.kind == "voice" for s in self.steps)

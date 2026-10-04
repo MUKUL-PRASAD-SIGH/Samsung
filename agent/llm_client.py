@@ -225,9 +225,6 @@ class MockLLMBackend(LLMBackend):
         self.canned_responses = list(canned_responses or [])
         self.call_history: List[List[Dict[str, str]]] = []
 
-    def queue_response(self, response: LLMResponse) -> None:
-        self.canned_responses.append(response)
-
     async def generate(
         self,
         messages: List[Dict[str, str]],

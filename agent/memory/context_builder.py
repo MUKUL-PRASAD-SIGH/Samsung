@@ -60,12 +60,4 @@ def build_history_messages(session: "SessionState", max_turns: int = 5) -> List[
     graph_memory = getattr(session, "graph_memory", None)
     if graph_memory is None:
         return []
-    return graph_memory.get_subgraph_prompt_context(current_intent=session.intent, max_turns=max_turns)
-
-
-def build_resolved_entity_state(session: "SessionState") -> str:
-    """Injects active persistent entities as a short line, e.g. 'Active destination: BOM'."""
-    if not session.slots:
-        return ""
-    parts = [f"{key}={value}" for key, value in session.slots.items()]
-    return "Resolved entities: " + ", ".join(parts)
+    return graph_memory.get_subgraph_prompt_context(max_turns=max_turns)

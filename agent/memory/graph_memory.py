@@ -245,7 +245,7 @@ class GraphMemory:
                 return True
         return False
 
-    def get_subgraph_prompt_context(self, current_intent: Optional[str] = None, max_turns: int = 5) -> List[Dict[str, str]]:
+    def get_subgraph_prompt_context(self, max_turns: int = 5) -> List[Dict[str, str]]:
         """Build clean chat-style messages from the last `max_turns` active turns."""
         thread = self.get_active_thread()[-max_turns:]
         messages: List[Dict[str, str]] = []

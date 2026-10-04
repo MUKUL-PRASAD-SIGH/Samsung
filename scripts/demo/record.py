@@ -238,7 +238,6 @@ async def main():
             await R.cap("Memory carries context: <b>“there”</b> means Goa. Then <b>Esc</b> to stop it")
             m = await ws_mark()
             await ask("Find hotels there for 2 nights", 40, 1.1)
-            await R.ev("__rec.hl(__rec.rect('#rec-cap')||{x:0,y:0,w:0,h:0},'')") if False else None
             await INPUT.first.click(); await page.keyboard.press("Escape")
             await R.cap("<b>Esc</b> (or the Stop button) cancels the running search and starts nothing")
             await asyncio.sleep(2.5)
@@ -275,7 +274,7 @@ async def main():
             await R.at(142.0)
             await page.evaluate("__desk.closeEditor()"); await page.evaluate("__desk.showApp()"); await R.ev("__rec.hud(true)")
             try:
-                await R.click(tab(re.compile(r"^Exports"))) if False else await F.get_by_role("button", name=re.compile(r"^Exports")).first.click()
+                await F.get_by_role("button", name=re.compile(r"^Exports")).first.click()
             except Exception: pass
             await R.cap("Every export is listed in <b>Exports</b>: open in VS Code, download, or copy the path")
             await R.at(149.5); await R.cap("")

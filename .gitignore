@@ -29,3 +29,6 @@ android/**/build/
 android/local.properties
 android/.idea/
 *.apk
+
+# KDE folder settings
+.directory
