@@ -35,6 +35,8 @@ class TurnNode:
     slots_snapshot: Dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=clock.now)
     pruned: bool = False  # set True when superseded by a rollback/branch
+    # Spoken replies can be cut off by the user: the words they actually heard (None = the full reply was delivered).
+    spoken_text: Optional[str] = None
 
 
 @dataclass
@@ -234,6 +236,16 @@ class GraphMemory:
         thread.reverse()
         return thread
 
+    def mark_response_truncated(self, full_text: str, spoken_text: str) -> bool:
+        """Record that the latest turn whose reply was `full_text` was only spoken up to `spoken_text` (the user
+        interrupted). Prompt context then shows what the user actually heard, so the model doesn't assume they
+        received information they were cut off before hearing."""
+        for node in reversed(list(self.turns.values())):
+            if node.agent_response == full_text and node.spoken_text is None:
+                node.spoken_text = spoken_text
+                return True
+        return False
+
     def get_subgraph_prompt_context(self, current_intent: Optional[str] = None, max_turns: int = 5) -> List[Dict[str, str]]:
         """Build clean chat-style messages from the last `max_turns` active turns."""
         thread = self.get_active_thread()[-max_turns:]
@@ -242,7 +254,12 @@ class GraphMemory:
             if node.user_prompt:
                 messages.append({"role": "user", "content": node.user_prompt})
             if node.agent_response:
-                messages.append({"role": "assistant", "content": node.agent_response})
+                reply = node.agent_response
+                if node.spoken_text is not None:
+                    heard = node.spoken_text.strip()
+                    reply = f"{heard} [interrupted by the user; the rest was never heard]" if heard else \
+                        "[interrupted by the user before this was heard]"
+                messages.append({"role": "assistant", "content": reply})
         return messages
 
     def get_entities_for_turn(self, turn_id: str) -> List[EntityNode]:

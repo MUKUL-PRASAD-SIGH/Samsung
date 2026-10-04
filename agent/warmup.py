@@ -109,6 +109,8 @@ async def run_full_warmup(coordinator, include_llm: bool = True) -> dict:
     if include_llm:
         await stage("llm", _llm, threaded=False)
     await stage("vision", get_vision_backend)
+    if coordinator.tts_backend is not None:
+        await stage("tts", lambda: coordinator.tts_backend.synthesize("Ready."))
     report["total_seconds"] = round(sum(v["seconds"] for v in report.values() if isinstance(v, dict)), 3)
     report["all_ok"] = all(v["ok"] for v in report.values() if isinstance(v, dict))
     coordinator.warmup_report = report

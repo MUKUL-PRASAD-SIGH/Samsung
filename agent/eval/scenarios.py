@@ -184,6 +184,30 @@ SUITE: List[Scenario] = [
                   tool("search_flights", origin="Mumbai", destination="Goa")],
         max_s=40,
     ),
+    # -------------------------------------------------------------------------- spoken output
+    Scenario(
+        name="speak_barge_in", tags=("interrupt", "speech"), speak=True,
+        description="Interrupt while the agent is TALKING (not while a tool runs): the voice must stop at once, the "
+                    "cut-off reply be recorded as truncated, and the correction still be carried out.",
+        steps=[Step(0, text="Find flights from Delhi to Mumbai"),
+               Step(3.2, text="No wait, make it Goa instead", interrupts=True)],
+        expected_calls=[ExpectedCall("search_flights", {"origin": DEL, "destination": GOA})],
+        expected_slots={"origin": DEL, "destination": GOA},
+        latency_s={"search_flights": 1.0},
+        mock_llm=[tool("search_flights", origin="Delhi", destination="Mumbai"),
+                  tool("search_flights", origin="Delhi", destination="Goa")],
+        max_s=40,
+    ),
+    Scenario(
+        name="speak_plain", tags=("task", "speech"), speak=True,
+        description="Spoken replies on, nobody interrupts: the whole reply is spoken and the turn still completes.",
+        steps=[Step(0, text="What's the weather like in Paris?")],
+        expected_calls=[ExpectedCall("check_weather", {"city": "Paris"})],
+        expected_slots={"city": "Paris"},
+        latency_s={"check_weather": 0.8},
+        mock_llm=[tool("check_weather", city="Paris")],
+        max_s=40,
+    ),
     # ------------------------------------------------------------------------- vision
     Scenario(
         name="vision_extract_arg", tags=("task", "vision"),

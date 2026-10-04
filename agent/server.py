@@ -22,6 +22,7 @@ from agent.coordinator import AgentCoordinator
 from agent.warmup import run_full_warmup
 from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent, VideoFrameEvent
 from agent.schemas.actions import BaseAction
+from agent.multimodal.tts import get_tts_backend
 from agent.trace_logger import TraceLogger
 
 logger = logging.getLogger("agent.server")
@@ -32,7 +33,8 @@ logger = logging.getLogger("agent.server")
 _trace_log_path = os.getenv("TRACE_LOG_PATH")
 _trace_strict = os.getenv("TRACE_STRICT", "0") == "1"
 coordinator = AgentCoordinator(
-    trace_logger=TraceLogger(log_file=_trace_log_path, strict=_trace_strict)
+    trace_logger=TraceLogger(log_file=_trace_log_path, strict=_trace_strict),
+    tts_backend=get_tts_backend(),     # None when piper-tts / the voice file is missing: the UI then hides the toggle
 )
 
 
@@ -91,6 +93,7 @@ async def health():
         "sessions": len(coordinator.sessions),
         "asr": coordinator.asr_processor.info(),
         "warmup": getattr(coordinator, "warmup_report", None),
+        "tts": {"available": coordinator.tts_backend is not None, "backend": getattr(coordinator.tts_backend, "name", None)},
         "trace_dropped_records": coordinator.trace_logger.dropped_count,
     }
 
@@ -165,6 +168,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             reason=data.get("reason", "ui_barge_in"),
                         )
                     )
+                elif event_type == "tts":
+                    # {"type":"tts","enabled":true}: the client plays audio_out actions and wants replies spoken.
+                    enabled = coordinator.set_tts(session_id, bool(data.get("enabled")))
+                    await websocket.send_text(json.dumps({"type": "tts_status", "enabled": enabled,
+                                                          "available": coordinator.tts_backend is not None}))
                 elif event_type == "voice_stream":
                     action = data.get("action")
                     if action in ("start", "stop"):

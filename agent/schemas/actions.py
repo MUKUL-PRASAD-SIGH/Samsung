@@ -29,6 +29,8 @@ class ActionType(str, Enum):
     GRAPH_SNAPSHOT = "graph_update"
     TRANSCRIPT = "transcript"
     VOICE_ACTIVITY = "voice_activity"
+    AUDIO_OUT = "audio_out"
+    SPEECH_STATE = "speech_state"
 
 
 class BaseAction(BaseModel):
@@ -119,6 +121,33 @@ class VoiceActivityAction(BaseAction):
     state: str
     utterance_id: Optional[str] = None
     detail: Optional[str] = None
+
+
+class AudioOutAction(BaseAction):
+    """One sentence of the agent's spoken reply (PCM16 mono, base64), to be played by the client in `seq` order."""
+
+    action_type: ActionType = ActionType.AUDIO_OUT
+    utterance_id: str
+    seq: int
+    text: str                      # the sentence this audio says
+    sample_rate: int
+    duration_ms: float
+    audio_b64: str
+    is_last: bool = False
+
+
+class SpeechStateAction(BaseAction):
+    """Lifecycle of a spoken reply: started | ducked | resumed | finished | stopped. A `stopped` reply was cut off
+    (reason: epoch_changed | user_spoke | interrupt | ...) and carries the words that WERE spoken, so the transcript and
+    memory record what the user actually heard rather than the full text that was planned."""
+
+    action_type: ActionType = ActionType.SPEECH_STATE
+    state: str
+    utterance_id: str
+    reason: Optional[str] = None
+    text: str = ""                 # the full planned reply
+    spoken_text: Optional[str] = None
+    spoken_ms: Optional[float] = None
 
 
 class GraphNodePayload(BaseModel):

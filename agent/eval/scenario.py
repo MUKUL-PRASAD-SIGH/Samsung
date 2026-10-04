@@ -51,6 +51,7 @@ class Scenario:
     mock_vision: List[str] = field(default_factory=list)                  # scripted vision answers (mock mode)
     vision_latency_s: float = 0.3                                          # mock vision latency
     expect_failure_notice: bool = False                                    # a failing tool must be reported
+    speak: bool = False                                                    # the client has spoken replies switched on
     max_s: float = 25.0                                                    # scenario wall-clock cap
 
     @property

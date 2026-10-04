@@ -52,7 +52,14 @@ _TRACE_VALIDATOR = jsonschema.Draft202012Validator(TRACE_RECORD_SCHEMA)
 
 def _redact_bytes(values: Dict[str, Any]) -> Dict[str, Any]:
     """Replace raw media (audio/video frames) with a size marker: keeps the trace small and JSON-serializable."""
-    return {k: (f"<{len(v)} bytes>" if isinstance(v, (bytes, bytearray)) else v) for k, v in values.items()}
+    def redact(k, v):
+        if isinstance(v, (bytes, bytearray)):
+            return f"<{len(v)} bytes>"
+        if k == "audio_b64" and isinstance(v, str):      # synthesized speech: a size marker, not 100 KB of base64
+            return f"<{len(v) * 3 // 4} bytes>"
+        return v
+
+    return {k: redact(k, v) for k, v in values.items()}
 
 
 class TraceValidationError(Exception):
@@ -108,7 +115,7 @@ class TraceLogger:
             "action_id": action.action_id,
             "epoch": action.epoch,
             "timestamp": action.timestamp,
-            "payload": action.model_dump(),
+            "payload": _redact_bytes(action.model_dump()),
         }
         if not self._validate_schema(record):
             return None

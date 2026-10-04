@@ -44,7 +44,9 @@ class _JumpingSelector:
             return self._inner.select(None)
         events = self._inner.select(0)
         if not events and timeout > 0:
-            self._loop._vtime += timeout
+            # Always make progress: a timeout below float resolution at the current time would otherwise leave
+            # virtual time unchanged and spin forever.
+            self._loop._vtime += max(timeout, 1e-6)
         return events
 
     def __getattr__(self, name):

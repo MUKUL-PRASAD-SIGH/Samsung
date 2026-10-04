@@ -25,6 +25,19 @@ Browser (React/Vite)                    FastAPI + WebSocket  (/ws/{session_id})
                                           └──────────────────────────────────────────────┘
 ```
 
+## Spoken replies (full duplex)
+
+The agent can speak. Install Piper (`pip install -e .[tts]`) and download a voice (commands in `.env.example`), restart the
+backend, and the UI shows a speaker button. Replies are synthesized sentence by sentence (faster than real time on CPU) and
+sent as `audio_out` actions; the browser plays them through WebAudio.
+
+* **Barge-in:** the voice ducks when you start talking and stops at your first real words (or instantly on a typed message, a
+  correction, or an interrupt). The server records what was actually heard (`speech_state: stopped`, `spoken_text`) and memory
+  shows the model `... [interrupted by the user]`, so it never assumes you heard the part you cut off.
+* **Echo:** the browser's echo canceller handles most of it; additionally the VAD bar is raised while the agent talks and any
+  transcript that is mostly the agent's own recent words is discarded. Verified with real Piper audio looped into the mic.
+* Check it in a real browser with `python scripts/ui_tts_check.py`. Evals: scenarios `speak_barge_in` / `speak_plain`.
+
 ## Quickstart
 
 ### Backend
@@ -93,6 +106,7 @@ See [`.env.example`](.env.example) for the full annotated list. The essentials:
 
 ```bash
 pip install -e ".[embeddings]"   # sentence-transformers for the semantic Tier-1 intent classifier
+pip install -e ".[tts]"          # Piper, for spoken replies (also needs a voice file, see .env.example)
 pip install -e ".[local]"        # tooling for serving a local model behind LocalQwenBackend
 pip install -e ".[dev]"          # pytest, ruff
 ```
@@ -107,7 +121,8 @@ pip install -e ".[dev]"          # pytest, ruff
 | `agent/slow_path/planner.py` | prompt assembly, LLM call, epoch-tagged plans, tool-call → slots |
 | `agent/llm_client.py` | Groq/OpenRouter/local/mock backends, circuit breaker, 429 retry |
 | `agent/fast_path/*` | Tier-1 interrupt classifier, Tier-2 templates |
-| `agent/multimodal/asr.py`, `streaming.py`, `vision.py` | Whisper, streaming VAD/segmentation, vision (stub) |
+| `agent/multimodal/asr.py`, `streaming.py`, `vision.py`, `tts.py` | Whisper, streaming VAD/segmentation, vision, Piper/mock speech synthesis |
+| `agent/speech.py` | the agent's voice per session: paced playback, instant stop on interruption, truncation record, echo guard |
 | `agent/memory/*` | scratchpad, graph memory, context builder, tool→slot extraction |
 | `agent/eval/*` | scenario runner, environment, scorer, suite, report, CLI |
 | `frontend/src/App.jsx` | the React UI |

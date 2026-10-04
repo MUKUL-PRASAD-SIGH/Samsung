@@ -26,6 +26,10 @@ CANCEL_FULL_S, CANCEL_ZERO_S = 0.25, 2.0   # interrupt-onset -> cancel action
 ACK_FULL_S, ACK_ZERO_S = 0.3, 2.0          # user done -> first filler/ack
 REPLY_FULL_S, REPLY_ZERO_S = 2.0, 8.0      # user done -> first substantive reply
 
+SPEECH_STOP_FULL_S, SPEECH_STOP_ZERO_S = 0.15, 1.0   # interrupt onset -> the agent's voice goes quiet
+
+SPEECH_STOP_FULL_S, SPEECH_STOP_ZERO_S = 0.15, 1.0   # interrupt onset -> the agent's voice goes quiet
+
 SPOKEN = ("filler", "spoken_response", "clarification")
 SUBSTANTIVE = ("spoken_response", "clarification")
 
@@ -214,12 +218,15 @@ def score_interruption_recovery(run: RunRecord) -> Optional[CategoryScore]:
         stale = [d for d in dispatches
                  if d.ts < T and not (d.cancel_ts is not None and d.cancel_ts < T)
                  and not (d.execution and d.execution.completed and d.execution.t_end is not None and d.execution.t_end < T)]
+        speech = _speech_parts(run, T, raw, notes)
         if not stale:
+            for k, v in speech.items():
+                parts_acc.setdefault(k, []).append(v)
             raw["interrupts_with_nothing_in_flight"] += 1
-            per_stimulus.append(1.0)
+            per_stimulus.append(_mean(list(speech.values())) if speech else 1.0)
             continue
 
-        parts: Dict[str, float] = {}
+        parts: Dict[str, float] = dict(speech)
         cancelled = [d for d in stale if d.cancel_ts is not None and d.cancel_ts >= T - 0.05]
         parts["cancel_coverage"] = len(cancelled) / len(stale)
         for d in stale:
@@ -266,6 +273,38 @@ def score_interruption_recovery(run: RunRecord) -> Optional[CategoryScore]:
         per_stimulus.append(min(_mean([v for k, v in parts.items() if k != "effective_cancellation"]), parts["effective_cancellation"]))
 
     return CategoryScore(_mean(per_stimulus), {k: _mean(v) for k, v in parts_acc.items()}, raw, notes)
+
+
+def _speech_parts(run: RunRecord, T: float, raw: Dict[str, Any], notes: List[str]) -> Dict[str, float]:
+    """Full-duplex check for one interrupt at time T: if the agent was SPEAKING, its voice must stop promptly, must
+    not carry on with the cut-off reply, and the cut-off must be recorded with the words that were actually heard."""
+    states = _actions(run.trace, "speech_state")
+    started = {r["payload"]["utterance_id"] for r in states if r["timestamp"] < T and r["payload"]["state"] == "started"}
+    ended = {r["payload"]["utterance_id"] for r in states
+             if r["timestamp"] < T and r["payload"]["state"] in ("finished", "stopped")}
+    live = sorted(started - ended)
+    parts: Dict[str, List[float]] = {}
+    for utt in live:
+        mine = [r for r in states if r["payload"]["utterance_id"] == utt and r["timestamp"] >= T - 0.05]
+        stopped = next((r for r in mine if r["payload"]["state"] == "stopped"), None)
+        if stopped is None:
+            parts.setdefault("speech_stopped", []).append(0.0)
+            notes.append(f"the agent kept talking after the interrupt (reply {utt} was not stopped)")
+            continue
+        lat = stopped["timestamp"] - T
+        raw.setdefault("speech_stop_latency_s", []).append(round(lat, 3))
+        parts.setdefault("speech_stopped", []).append(_lin(lat, SPEECH_STOP_FULL_S, SPEECH_STOP_ZERO_S))
+        late = [r for r in _actions(run.trace, "audio_out")
+                if r["payload"]["utterance_id"] == utt and r["timestamp"] > stopped["timestamp"] + 0.001]
+        parts.setdefault("no_audio_after_stop", []).append(0.0 if late else 1.0)
+        if late:
+            notes.append(f"audio for reply {utt} kept being sent after speech was stopped")
+        heard, full = stopped["payload"].get("spoken_text"), stopped["payload"].get("text")
+        ok = heard is not None and heard != full
+        parts.setdefault("truncation_recorded", []).append(1.0 if ok else 0.0)
+        if not ok:
+            notes.append(f"cut-off reply {utt} was not recorded as truncated (spoken_text={heard!r})")
+    return {k: _mean(v) for k, v in parts.items()}
 
 
 # ---------------------------------------------------------------------------------- latency

@@ -34,6 +34,7 @@ from agent.schemas.actions import (
     FillerAction,
     SpokenResponseAction,
     ClarificationAction,
+    ActionType,
     ToolCallAction,
     ToolCancelAction,
     StateSnapshotAction,
@@ -52,6 +53,8 @@ from agent.fast_path.intent_classifier import IntentClassifier, embeddings_enabl
 from agent.slow_path.planner import Planner
 from agent.llm_client import MockLLMBackend, LLMBackend, get_backend, LLMConfig
 from agent.multimodal.asr import ASRProcessor
+from agent.multimodal.tts import TTSBackend
+from agent.speech import SessionSpeaker, is_substantial
 from agent.multimodal.vision import ALLOWED_MIME, MAX_FRAME_BYTES, VisionBackend, get_vision_backend
 from agent.multimodal.streaming import (
     endpoint_hint_ms,
@@ -83,6 +86,12 @@ MAX_FRAME_AGE_S = 15.0      # a frame older than this means sharing stopped: don
 # Resource bounds (gap #8): sessions are in-memory only and were never evicted, so a long-running
 # server accumulated one SessionState (plus its idempotency store and memory graph) per page load
 # forever. <= 0 disables eviction, e.g. for tests that assert on session count across time.
+_SPOKEN_TYPES = (ActionType.FILLER, ActionType.SPOKEN_RESPONSE, ActionType.CLARIFICATION)
+# Default: duck on speech onset (~0.35 s), stop at the first non-echo partial transcript (~1.2 s). Set to 1 to stop the
+# moment the VAD hears speech: fastest barge-in, but any noise or leaked echo that opens the VAD then cuts a reply short.
+STOP_ON_SPEECH_START = os.getenv("VOICE_STOP_ON_SPEECH_START", "0") == "1"
+SPEAKING_VAD_THRESHOLD = float(os.getenv("VOICE_SPEAKING_VAD_THRESHOLD", "0.75"))
+
 # Adaptive endpointing (shorter when the transcript has stabilised, longer after a dangling word). 0 disables.
 ADAPTIVE_ENDPOINT = os.getenv("VOICE_ADAPTIVE_ENDPOINT", "1") == "1"
 # A final transcript may reuse the last partial only if it covered all but this much of the audio. Keep it small: the
@@ -111,6 +120,7 @@ class _VoiceRuntime:
     barge_in_fired: Set[str] = field(default_factory=set)
     finalized: Set[str] = field(default_factory=set)
     partials: Dict[str, List[str]] = field(default_factory=dict)  # utterance_id -> partial transcripts so far
+    talkover: Dict[str, int] = field(default_factory=dict)   # utterance_id -> consecutive substantial non-echo partials
     last_partial: Dict[str, Tuple[int, str]] = field(default_factory=dict)  # utterance_id -> (pcm bytes covered, text)
     tasks: Set[asyncio.Task] = field(default_factory=set)
 
@@ -122,6 +132,7 @@ class AgentCoordinator:
         trace_logger: Optional[TraceLogger] = None,
         llm_backend: Optional[LLMBackend] = None,
         intent_classifier: Optional[IntentClassifier] = None,
+        tts_backend: Optional[TTSBackend] = None,
         asr_processor: Optional[ASRProcessor] = None,
         vision_backend: Optional[VisionBackend] = None,
         enable_debounce: bool = True,
@@ -138,6 +149,8 @@ class AgentCoordinator:
         self.intent_classifier = intent_classifier or IntentClassifier(use_embeddings=embeddings_enabled())
         self.llm_backend = llm_backend or get_backend(LLMConfig())
         self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
+        self.tts_backend = tts_backend
+        self._speakers: Dict[str, SessionSpeaker] = {}   # session_id -> its voice (only for sessions that opted in)
         self.warmup_report: Optional[Dict[str, Any]] = None  # filled by agent.warmup.run_full_warmup
         self.asr_processor = asr_processor or ASRProcessor()
         self.vision_backend = vision_backend or get_vision_backend()
@@ -188,6 +201,9 @@ class AgentCoordinator:
             self._audio_buffers.pop(sid, None)
             self._frames.pop(sid, None)
             self._voice.pop(sid, None)
+            speaker = self._speakers.pop(sid, None)
+            if speaker is not None:
+                speaker.close()
             self._active_plans.pop(sid, None)
         if stale:
             logger.info("Evicted %d idle session(s): %s", len(stale), stale)
@@ -242,6 +258,9 @@ class AgentCoordinator:
             for task in list(runtime.tasks):
                 task.cancel()
         self._voice.clear()
+        for speaker in self._speakers.values():
+            speaker.close()
+        self._speakers.clear()
         self._audio_buffers.clear()
 
     async def post_event(self, event: BaseEvent) -> None:
@@ -249,12 +268,53 @@ class AgentCoordinator:
         self.trace_logger.log_event(event)
         if event.session_id in self.sessions:
             self.sessions[event.session_id].touch()
+        if event.event_type == EventType.USER_TEXT and getattr(event, "text", "").strip():
+            self._stop_speech(event.session_id, "user_spoke")   # don't wait out the debounce window to go quiet
         await self.event_queue.put(event)
 
     async def emit_action(self, action: BaseAction) -> None:
         """Outbound interface: Put an action onto the Action Queue after trace validation."""
         self.trace_logger.log_action(action)
         await self.action_queue.put(action)
+        if action.action_type in _SPOKEN_TYPES:
+            speaker = self._speakers.get(action.session_id)
+            if speaker is not None and speaker.enabled:
+                speaker.enqueue(getattr(action, "text", None) or getattr(action, "question", "") or "", action.epoch)
+
+    # ------------------------------------------------------------------------------------------ speech (Phase C)
+    def set_tts(self, session_id: str, enabled: bool) -> bool:
+        """Client opt-in/out of spoken replies. Returns whether speech is now active (False if no TTS backend)."""
+        if self.tts_backend is None:
+            return False
+        session = self.get_or_create_session(session_id)
+        speaker = self._speakers.get(session_id)
+        if speaker is None:
+            speaker = SessionSpeaker(
+                session, self.tts_backend, self.emit_action,
+                on_truncated=lambda full, spoken: self._record_truncation(session, full, spoken),
+                on_activity=lambda speaking: self._on_speaking_changed(session_id, speaking),
+            )
+            self._speakers[session_id] = speaker
+        speaker.enabled = enabled
+        if not enabled:
+            speaker.stop("tts_disabled")
+        return enabled
+
+    def _stop_speech(self, session_id: str, reason: str) -> None:
+        speaker = self._speakers.get(session_id)
+        if speaker is not None:
+            speaker.stop(reason)
+
+    def _record_truncation(self, session: SessionState, full_text: str, spoken_text: str) -> None:
+        if session.graph_memory is not None:
+            session.graph_memory.mark_response_truncated(full_text, spoken_text)
+
+    def _on_speaking_changed(self, session_id: str, speaking: bool) -> None:
+        """While the agent talks, demand clearer speech from the VAD so its own voice leaking into the mic is not
+        mistaken for the user (the acoustic echo canceller handles most of it; this is the second line of defence)."""
+        runtime = self._voice.get(session_id)
+        if runtime is not None:
+            runtime.stream.set_speech_threshold(SPEAKING_VAD_THRESHOLD if speaking else None)
 
     async def _commit_turn_and_emit_graph(
         self,
@@ -467,6 +527,12 @@ class AgentCoordinator:
                 await self.emit_action(
                     VoiceActivityAction(session_id=sid, epoch=session.epoch, state="speech_start", utterance_id=ev.utterance_id)
                 )
+                speaker = self._speakers.get(sid)
+                if speaker is not None:
+                    if STOP_ON_SPEECH_START and speaker.speaking:
+                        speaker.stop("user_speech_start")   # most aggressive: the VAD alone is enough to cut the agent off
+                    else:
+                        await speaker.duck()
             elif isinstance(ev, PartialDue):
                 # One partial in flight at a time; if Whisper is still busy, skip this tick.
                 if runtime.partial_task is None or runtime.partial_task.done():
@@ -474,6 +540,7 @@ class AgentCoordinator:
             elif isinstance(ev, UtteranceEnd):
                 runtime.finalized.add(ev.utterance_id)  # any partial still in flight for it is now stale
                 runtime.partials.pop(ev.utterance_id, None)
+                runtime.talkover.pop(ev.utterance_id, None)
                 await self.emit_action(
                     VoiceActivityAction(
                         session_id=sid, epoch=session.epoch, state="speech_end",
@@ -489,6 +556,24 @@ class AgentCoordinator:
         text = await asyncio.to_thread(self.asr_processor.transcribe_audio_bytes, ev.pcm, "pcm_16khz")
         if not text or ev.utterance_id in runtime.finalized:
             return
+        speaker = self._speakers.get(session.session_id)
+        if speaker is not None:
+            if speaker.is_echo(text):
+                return    # our own voice coming back through the microphone: not the user, never a barge-in
+            # Real speech over our voice. An interrupt word ("no wait", "stop") stops it at once. Otherwise require the
+            # evidence to persist for two consecutive substantial partials: one stray fragment could be a mangled piece
+            # of our own voice (ASR hallucinates on playback audio), and a user who is really talking over us keeps
+            # producing partials every ~0.5 s. The client has already ducked the volume in the meantime.
+            if self.intent_classifier.classify_text(text)["decision"] != "continue":
+                evidence = 2
+            elif is_substantial(text):
+                evidence = runtime.talkover.get(ev.utterance_id, 0) + 1
+            else:
+                evidence = 0
+            runtime.talkover[ev.utterance_id] = evidence if evidence < 2 else 2
+            if evidence >= 2:
+                logger.info("Stopping speech: user talking over the agent (partial %r)", text)
+                speaker.stop("user_spoke")
         await self.emit_action(
             TranscriptAction(
                 session_id=session.session_id,
@@ -563,6 +648,17 @@ class AgentCoordinator:
         handled = ev.utterance_id in runtime.barge_in_fired
         runtime.barge_in_fired.discard(ev.utterance_id)
         runtime.finalized.discard(ev.utterance_id)
+        speaker = self._speakers.get(session.session_id)
+        if speaker is not None:
+            if text and speaker.is_echo(text):
+                logger.info("Ignoring %s: echo of the agent's own speech: %r", ev.utterance_id, text)
+                await speaker.resume()
+                return
+            if text:
+                logger.info("Stopping speech: user took the floor (final %r)", text)
+                speaker.stop("user_spoke")      # the user has the floor: stop talking before the reply is even planned
+            else:
+                await speaker.resume()
         if text:
             logger.info("Voice utterance %s (%s): '%s'", ev.utterance_id, ev.reason, text)
             await self.post_event(UserTextEvent(session_id=session.session_id, text=text, barge_in_handled=handled, immediate=True))
@@ -607,6 +703,7 @@ class AgentCoordinator:
 
     async def _handle_interrupt(self, session: SessionState, reason: str = "interrupt") -> None:
         """Handle interrupt signal: bump epoch, emit cancellations and updated snapshot."""
+        self._stop_speech(session.session_id, "interrupt")
         cancellations = session.bump_epoch(reason=reason)
         for cancel_action in cancellations:
             await self.emit_action(cancel_action)
@@ -638,6 +735,7 @@ class AgentCoordinator:
         """Process user text: Tier 1 intent/interrupt classification, Tier 2 fast filler, Tier 3 planner."""
         if session.scratchpad is not None:
             session.scratchpad.append_utterance_chunk(event.text)
+        self._stop_speech(session.session_id, "user_spoke")   # the user has the floor; whatever they said gets a new reply
 
         # Tier 1 Interrupt / Intent-Shift Detection (§3, §7.2)
         has_work = any(c.status in ("pending", "running") for c in session.in_flight_calls.values())

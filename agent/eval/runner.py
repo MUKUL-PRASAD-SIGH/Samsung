@@ -18,6 +18,7 @@ from agent.eval.environment import Environment, ExecRecord, instrument_vision
 from agent.eval.scenario import Scenario, Step
 from agent.llm_client import LLMBackend, LLMConfig, LLMResponse, MockLLMBackend, get_backend
 from agent.multimodal.asr import ASRProcessor
+from agent.multimodal.tts import MockTTSBackend
 from agent.multimodal.vision import MockVisionBackend, OpenRouterVisionBackend, VisionBackend
 from agent.schemas.events import AudioChunkEvent, InterruptSignalEvent, UserTextEvent, VideoFrameEvent
 from agent.trace_logger import TraceLogger
@@ -144,6 +145,8 @@ def _is_quiet(c: AgentCoordinator) -> bool:
         return False
     if any(rt.tasks or rt.stream.is_speaking for rt in c._voice.values()):
         return False
+    if any(sp.speaking or sp._queue for sp in c._speakers.values()):
+        return False
     for s in c.sessions.values():
         if any(call.status in ("pending", "running") for call in s.in_flight_calls.values()):
             return False
@@ -182,7 +185,10 @@ async def run_scenario(
     coordinator = AgentCoordinator(
         tool_router=env.router, trace_logger=trace, llm_backend=backend,
         asr_processor=asr or ASRProcessor(), vision_backend=vision, enable_debounce=True,
+        tts_backend=MockTTSBackend() if scenario.speak else None,   # silent but real-length audio: timing is measurable
     )
+    if scenario.speak:
+        coordinator.set_tts(sid, True)
     instrument_vision(env, coordinator)
 
     if pacer is not None:

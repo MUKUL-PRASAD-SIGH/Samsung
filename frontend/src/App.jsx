@@ -28,10 +28,13 @@ import {
   ShieldCheck,
   RefreshCw,
   SlidersHorizontal,
-  ChevronRight
+  ChevronRight,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import MarkdownReply from './components/MarkdownReply';
 import TraceTimeline from './components/TraceTimeline';
+import useSpeechPlayer from './hooks/useSpeechPlayer';
 
 // Cute Animated SVG Robot Character for the Active Swarm
 function MiniBotAvatar({ status, isWatching }) {
@@ -250,6 +253,7 @@ export default function App() {
     fetch('/health')
       .then((r) => r.json())
       .then((h) => {
+        setTtsAvailable(!!(h.tts && h.tts.available));
         if (h.asr) {
           const state = h.asr.load_failed ? 'unavailable' : h.asr.loaded ? 'ready' : 'loading…';
           setAsrEngine(`faster-whisper (${h.asr.model}, ${h.asr.device}/${h.asr.compute_type}) — ${state}`);
@@ -281,6 +285,8 @@ export default function App() {
   ]);
 
   const wsRef = useRef(null);
+  const [ttsAvailable, setTtsAvailable] = useState(false);   // server has a TTS backend (piper-tts + voice file)
+  const speech = useSpeechPlayer(wsRef, connected);
   const voiceRef = useRef(null); // { stream, ctx, node, sink } while streaming
   const shareRef = useRef(null); // { stream, video, canvas, kind, timer } while sharing camera/screen
   const previewVideoRef = useRef(null);
@@ -517,6 +523,15 @@ export default function App() {
           return next;
         });
         addTrace('audio', heard ? `Whisper (${action.asr_model}, ${action.latency_ms}ms): "${heard}"` : 'Whisper: no speech detected', action);
+      }
+
+    } else if (action.action_type === 'audio_out') {
+      speech.handleAction(action);
+
+    } else if (action.action_type === 'speech_state') {
+      speech.handleAction(action);
+      if (action.state === 'stopped') {
+        addTrace('tool_cancel', `Stopped speaking (${action.reason}) after "${(action.spoken_text || '').slice(0, 60)}"`, action);
       }
 
     } else if (action.action_type === 'voice_activity') {
@@ -772,6 +787,16 @@ export default function App() {
 
   const toggleRecording = () => (isRecording ? stopVoiceStream() : startVoiceStream());
 
+  const speakButton = ttsAvailable ? (
+    <button
+      onClick={speech.toggle}
+      className={`hover:text-white transition ${speech.enabled ? 'text-emerald-400' : ''} ${speech.speaking ? 'animate-pulse' : ''}`}
+      title={speech.enabled ? 'Spoken replies on (speak to interrupt)' : 'Speak replies aloud'}
+    >
+      {speech.enabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+    </button>
+  ) : null;
+
   // Always visible while sharing (both views): the user must never be unsure whether the agent can see them.
   const sharingChip = sharing !== 'off' ? (
     <div className="px-2.5 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-center justify-between gap-3 text-[11px] text-emerald-300 font-mono">
@@ -987,6 +1012,7 @@ export default function App() {
                   >
                     <ScreenShare className="w-4 h-4" />
                   </button>
+                  {speakButton}
                   <button 
                     onClick={toggleRecording} 
                     className={`hover:text-white transition ${isRecording ? 'text-rose-400 animate-pulse' : ''}`}
@@ -1105,6 +1131,7 @@ export default function App() {
                       >
                         <ScreenShare className="w-4 h-4" />
                       </button>
+                      {speakButton}
                       <button 
                         onClick={toggleRecording} 
                         className={`hover:text-white transition ${isRecording ? 'text-rose-400 animate-pulse' : ''}`}

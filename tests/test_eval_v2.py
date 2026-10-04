@@ -121,7 +121,7 @@ async def test_a_high_spread_alone_is_flaky_even_if_the_task_always_passes():
 
 async def test_generalization_gap():
     dev = await score(BY_NAME["flight_search"])
-    held = await score(BY_NAME["ho_phrasing_flight"])
+    held = await score(BY_NAME["ho_phrasing_hotel"])
     assert generalization_gap([dev]) is None and generalization_gap([held]) is None
     g = generalization_gap([dev, _flaky_copy(held, task=0.0)])   # hold-out scenario that fails its task
     assert g["dev"] == 100.0 and 0 < g["holdout"] < 100.0 and g["gap"] == round(g["dev"] - g["holdout"], 2)

@@ -194,6 +194,7 @@ class VoiceStream:
         self._min_partial_frames = max(1, round(self.cfg.min_partial_ms / FRAME_MS))
         self._tail_partial_frames = round(self.cfg.tail_partial_ms / FRAME_MS) if self.cfg.tail_partial_ms > 0 else 0
         self._utt_counter = 0
+        self._speech_threshold = self.cfg.speech_threshold
         self.reset()
 
     # -- lifecycle
@@ -209,6 +210,11 @@ class VoiceStream:
         self._silence_run = 0
         self._speech_frames = 0
         self._since_partial = 0
+
+    def set_speech_threshold(self, threshold: Optional[float]) -> None:
+        """Temporarily raise the speech-probability bar (while the agent is talking, to resist its own echo);
+        None restores the configured value."""
+        self._speech_threshold = self.cfg.speech_threshold if threshold is None else max(threshold, self.cfg.speech_threshold)
 
     def set_endpoint_ms(self, ms: float) -> None:
         """Override the silence needed to end the CURRENT utterance (reset when it ends)."""
@@ -246,7 +252,7 @@ class VoiceStream:
         p = self.vad.prob(frame)
 
         if not self._speaking:
-            if p >= self.cfg.speech_threshold:
+            if p >= self._speech_threshold:
                 self._speech_run += 1
             else:
                 self._speech_run = 0
