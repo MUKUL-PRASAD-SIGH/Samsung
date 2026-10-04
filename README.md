@@ -12,6 +12,14 @@ wrong thing.
 
 Watch it on YouTube: https://youtu.be/Q-XZVE3dy20
 
+## Submission materials
+
+| | |
+|---|---|
+| **Presentation** | [Kairos presentation (Google Drive)](https://drive.google.com/file/d/1wE60L8Dm04G2XPnu-q6zbdWZ9Lgg_m2r/view?usp=sharing) |
+| **AI disclosure** | [AI DISCLOSURE (Google Doc)](https://docs.google.com/document/d/1xdKPG_2WC5S2BYweRU111znkb093S7C7/edit) |
+| **Demo video** | [youtu.be/Q-XZVE3dy20](https://youtu.be/Q-XZVE3dy20) |
+
 ## Download
 
 Ready-made apps are on the [release page](https://github.com/V4RSH1TH-R3DDY/Kairos/releases/tag/PRISM_GENAI_HACKATHON_Y2026): no Python, Node or terminal needed.
