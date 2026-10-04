@@ -6,6 +6,12 @@
 interruptible real-time agent (Samsung Hackathon, Theme 05): talk over it, correct it mid-task, and it adapts instead of finishing the
 wrong thing.
 
+## Demo video
+
+[![Watch the Kairos demo on YouTube](https://img.youtube.com/vi/Q-XZVE3dy20/hqdefault.jpg)](https://youtu.be/Q-XZVE3dy20)
+
+Watch it on YouTube: https://youtu.be/Q-XZVE3dy20
+
 ## Download
 
 Ready-made apps are on the [release page](https://github.com/V4RSH1TH-R3DDY/Kairos/releases/tag/PRISM_GENAI_HACKATHON_Y2026): no Python, Node or terminal needed.
