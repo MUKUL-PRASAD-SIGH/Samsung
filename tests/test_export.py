@@ -117,7 +117,7 @@ def test_open_none_disables_the_editor_and_a_missing_editor_never_fails_the_expo
 
 
 def test_a_hostile_filename_cannot_inject_editor_arguments(tmp_path, monkeypatch):
-    log = _fake_editor(tmp_path, monkeypatch)
+    _fake_editor(tmp_path, monkeypatch)
     monkeypatch.setenv("EXPORT_OPEN", "1")
     r = exporter.export_file("1", "--install-extension evil.py; rm -rf x.py")
     assert Path(r.path).is_absolute()                       # the editor gets an absolute path, so a leading "-" can't be an option

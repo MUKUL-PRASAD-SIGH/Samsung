@@ -86,8 +86,8 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val busy = state.inFlight.isNotEmpty() || state.agentSpeaking || state.agents.any { it.status == "working" }
 
-    LaunchedEffect(state.messages.size, state.agents.size) {
-        val last = state.messages.size + state.agents.size + (if (state.artifact != null) 1 else 0) - 1
+    LaunchedEffect(state.messages.size, state.agents.size, state.exports.size) {
+        val last = state.messages.size + state.agents.size + (if (state.artifact != null || state.artifactLoading) 1 else 0) + state.exports.size - 1
         if (last >= 0) listState.animateScrollToItem(last)
     }
 
