@@ -91,3 +91,25 @@ def test_ruff_config_gates_correctness_rules_only():
 def test_setuptools_only_packages_the_agent():
     """A fresh `pip install -e .` failed with 'Multiple top-level packages discovered' until this was set."""
     assert _pyproject()["tool"]["setuptools"]["packages"]["find"]["include"] == ["agent*"]
+
+
+# ------------------------------------------------------------------------------------------ desktop packaging
+def test_desktop_build_workflow_is_valid_and_builds_the_installer():
+    wf = yaml.safe_load((ROOT / ".github/workflows/build-desktop.yml").read_text())
+    job = wf["jobs"]["windows"]
+    assert job["runs-on"] == "windows-latest" and wf["permissions"]["contents"] == "write"
+    text = (ROOT / ".github/workflows/build-desktop.yml").read_text()
+    for needle in ("pyinstaller packaging/kairos.spec", "installer.iss", "Kairos.exe", "/settings/keys", "gh release upload"):
+        assert needle in text
+
+
+def test_pyinstaller_spec_is_valid_python_and_keeps_torch_out():
+    src = (ROOT / "packaging/kairos.spec").read_text()
+    compile(src, "kairos.spec", "exec")
+    assert '"torch"' in src and "frontend/dist" in src and "intent_weights.json" in src
+    assert (ROOT / "packaging/kairos_app.py").exists() and (ROOT / "packaging/kairos.ico").stat().st_size > 1000
+
+
+def test_installer_script_installs_the_pyinstaller_output():
+    iss = (ROOT / "packaging/installer.iss").read_text()
+    assert r"..\dist\Kairos\*" in iss and "Kairos.exe" in iss and "AppVersion" in iss

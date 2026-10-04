@@ -7,6 +7,7 @@
 | A. One-command script | Python 3.10 to 3.12, optionally Node 18+ | about 5 min | Most judges |
 | B. Docker | Docker with compose | 10 to 20 min first build | No Python on the machine |
 | C. Manual | Python, Node | about 10 min | Full control |
+| D. Windows installer | Windows 10 or 11 | 2 min | Using it without any tooling: see the Desktop App chapter |
 
 Python 3.13 and newer are not supported by the speech dependencies. The scripts below find a suitable interpreter, or use `uv` to fetch Python 3.11 if you have it.
 

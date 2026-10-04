@@ -27,6 +27,22 @@ Then, to use a real model, put `GROQ_API_KEY=...` (or `OPENROUTER_API_KEY=...`) 
 * **Trouble?** The microphone only works on `localhost` or HTTPS; port 8000 busy: `kairos --port 8001`; the troubleshooting table is in
   `docs/01_setup_and_quickstart.docx`.
 
+## Windows app (download and run)
+
+No Python, Node or terminal needed: download **`Kairos-Setup-<version>.exe`** from the [Releases](../../releases) page, run it, and
+start Kairos from the Start menu. (A portable `Kairos-Windows-portable-<version>.zip` is attached too: unzip and run `Kairos.exe`.)
+
+* **First run:** Kairos opens in its own window and asks for your **Groq** and/or **OpenRouter** API key. It checks the key with
+  the provider, then stores it on your computer only (`%APPDATA%\Kairos\keys.json`). Change or remove keys any time under
+  Settings → API keys. "Skip" runs the offline demo mode.
+* **First start downloads** the speech-recognition model (about 140 MB, when you first use voice) and the speaking voice (about 60 MB), then works offline except for the LLM calls.
+* The installer is unsigned, so Windows SmartScreen may say "unknown publisher": choose *More info → Run anyway*.
+* A small console window stays open while Kairos runs; close it to quit.
+* The desktop build omits PyTorch to stay small, so interruptions are detected by the keyword classifier rather than the MiniLM
+  one (the Docker and `pip` installs keep MiniLM).
+* Build it yourself: `.github/workflows/build-desktop.yml` (runs on version tags or from the Actions tab), or locally with
+  `pip install -e ".[tts,build]"` then `pyinstaller packaging/kairos.spec` (see `packaging/`).
+
 ## Documentation
 
 Detailed documentation of every component is in [`docs/`](docs/) as `.docx` files (Markdown sources in `docs/src/`, rebuilt with

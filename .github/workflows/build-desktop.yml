@@ -1,0 +1,98 @@
+name: Build desktop app
+
+# Builds the Windows installer (Kairos-Setup-<version>.exe) and a portable zip. Runs on version tags (v*), on tags that name a
+# release such as PRISM_GENAI_HACKATHON_Y2026 when started by hand, and on demand from the Actions tab.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the files to this existing release/tag (leave empty to only keep them as workflow artifacts)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - name: Build the web UI
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip, cache-dependency-path: pyproject.toml }
+      - name: "Install (no PyTorch, so the desktop app uses the keyword interrupt classifier)"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[tts,build]"
+
+      - name: Package with PyInstaller
+        run: pyinstaller packaging/kairos.spec --noconfirm
+
+      - name: Smoke test the packaged app
+        shell: pwsh
+        run: |
+          $env:TTS_BACKEND = "off"                      # the voice download is exercised by the unit tests, not here
+          $env:WARMUP_LLM = "0"
+          $p = Start-Process -FilePath "dist\Kairos\Kairos.exe" -ArgumentList "--no-open","--port","8123" -PassThru -RedirectStandardOutput kairos.out -RedirectStandardError kairos.err
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            try { $h = Invoke-RestMethod http://127.0.0.1:8123/health -TimeoutSec 3; $ok = $true; break } catch {}
+          }
+          if (-not $ok) { Get-Content kairos.out, kairos.err; throw "Kairos.exe did not become healthy" }
+          Write-Host "health: $($h | ConvertTo-Json -Compress)"
+          $keys = Invoke-RestMethod http://127.0.0.1:8123/settings/keys
+          if ($keys.configured) { throw "expected no key on a clean machine" }
+          $page = Invoke-WebRequest http://127.0.0.1:8123/ -UseBasicParsing
+          if ($page.Content -notmatch "<div id=`"root`">") { throw "web UI was not served from the package" }
+          try { Invoke-RestMethod -Method Put http://127.0.0.1:8123/settings/keys -ContentType "application/json" -Body '{"groq_api_key":"nope"}' } catch { Write-Host "bad key rejected: $($_.Exception.Response.StatusCode)" }
+          Stop-Process -Id $p.Id -Force
+
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.release_tag || github.ref_name }}"
+          $v = if ($tag -match '^v?(\d+\.\d+\.\d+)') { $Matches[1] } else { "1.0.0" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" packaging\installer.iss
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\Kairos -DestinationPath "dist\Kairos-Windows-portable-${{ steps.ver.outputs.version }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kairos-windows
+          path: |
+            dist/Kairos-Setup-*.exe
+            dist/Kairos-Windows-portable-*.zip
+
+      - name: Attach to the GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event.inputs.release_tag != '' }}
+        shell: pwsh
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --title $tag --notes "Windows installer and portable build." }
+          gh release upload $tag (Get-ChildItem dist\Kairos-Setup-*.exe, dist\Kairos-Windows-portable-*.zip) --clobber

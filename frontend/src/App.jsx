@@ -41,6 +41,7 @@ import TraceTimeline from './components/TraceTimeline';
 import useSpeechPlayer from './hooks/useSpeechPlayer';
 import { Logo, Wordmark } from './components/Brand';
 import LoginScreen from './components/LoginScreen';
+import ApiKeysScreen from './components/ApiKeysScreen';
 import SuggestionChips from './components/SuggestionChips';
 import ExportsList from './components/ExportsList';
 import { ToastStack, useToasts } from './components/Toasts';
@@ -211,6 +212,32 @@ export default function App() {
     setAuthToken('');
     setAuth('login');
   };
+  // LLM provider keys (Groq / OpenRouter). On first run with none configured, ask for them; "skip" continues in the offline demo mode.
+  const [keysStatus, setKeysStatus] = useState(null);
+  const [keysOpen, setKeysOpen] = useState(false);
+  const [keysSkipped, setKeysSkipped] = useState(() => localStorage.getItem('kairos.keysSkipped') === '1');
+  const authHeaders = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+  useEffect(() => {
+    if (auth !== 'ok') return;
+    fetch('/settings/keys', { headers: authHeaders }).then((r) => (r.ok ? r.json() : null)).then(setKeysStatus).catch(() => {});
+  }, [auth]);
+  const saveKeys = async (updates) => {
+    let r;
+    try {
+      r = await fetch('/settings/keys', { method: 'PUT', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(updates) });
+    } catch {
+      return { error: 'Cannot reach the server. Is Kairos still running?' };
+    }
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return { error: body.error || 'Could not save the key.', field: body.field };
+    setKeysStatus(body);
+    localStorage.removeItem('kairos.keysSkipped');
+    setKeysSkipped(false);
+    (body.warnings || []).forEach((w) => toast(w));
+    if (body.configured) toast('Connected. Kairos is now using your key.', 'ok');
+    return true;
+  };
+  const skipKeys = () => { localStorage.setItem('kairos.keysSkipped', '1'); setKeysSkipped(true); };
   const [connected, setConnected] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false); // hands-free voice streaming is on
@@ -859,6 +886,7 @@ export default function App() {
     return <div className="h-screen w-screen flex items-center justify-center bg-[#0b0e14]"><Logo className="w-14 h-14 animate-pulse" /></div>;
   }
   if (auth === 'login') return <LoginScreen onSubmit={signIn} initialError={authNotice} />;
+  if (keysStatus && !keysStatus.configured && !keysSkipped) return <ApiKeysScreen status={keysStatus} onSave={saveKeys} onSkip={skipKeys} />;
 
   return (
     <div 
@@ -1596,6 +1624,7 @@ export default function App() {
       {/* ─────────────────────────────────────────────────────────────
           3. SETTINGS MODAL (Triggered by Left Sidebar Tab)
       ───────────────────────────────────────────────────────────── */}
+      {keysOpen && <ApiKeysScreen status={keysStatus} onSave={saveKeys} onClose={() => setKeysOpen(false)} />}
       {settingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
           <div className="w-full max-w-md bg-[#161820] border border-white/10 rounded-2xl p-6 shadow-2xl space-y-5 text-slate-200">
@@ -1625,6 +1654,17 @@ export default function App() {
                   <option value="meta-llama/llama-3.1-8b-instruct">meta-llama/llama-3.1-8b-instruct</option>
                   <option value="google/gemini-2.0-flash">google/gemini-2.0-flash</option>
                 </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-slate-400 font-medium">API keys</label>
+                <button
+                  onClick={() => { setSettingsOpen(false); setKeysOpen(true); }}
+                  className="w-full flex items-center justify-between bg-[#1e212b] border border-white/10 hover:border-amber-400/50 rounded-xl px-3 py-2 text-slate-200 transition"
+                >
+                  <span>{keysStatus?.configured ? `Using ${keysStatus.backend === 'groq' ? 'Groq' : keysStatus.backend === 'openrouter' ? 'OpenRouter' : 'a local model'}` : 'Offline demo mode: add a key'}</span>
+                  <span className="text-amber-300 font-semibold">Manage</span>
+                </button>
               </div>
 
               <div className="space-y-1.5">

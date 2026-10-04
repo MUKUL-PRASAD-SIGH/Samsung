@@ -228,6 +228,13 @@ class AgentCoordinator:
             except Exception:
                 logger.exception("Session eviction pass failed")
 
+    def reload_llm(self) -> None:
+        """Rebuild the LLM and vision backends from the current environment (a provider key was added or changed in the UI).
+        In-flight turns finish on the old client; the next turn uses the new one."""
+        self.llm_backend = get_backend(LLMConfig())
+        self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
+        self.vision_backend = get_vision_backend()
+
     async def start(self) -> None:
         """Start the background event processing loop."""
         if self._running:

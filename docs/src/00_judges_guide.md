@@ -40,6 +40,7 @@ Without an LLM key Kairos runs in an offline **mock mode**: canned planner repli
 | 11 Web Frontend | React UI |
 | 12 Android App | Kotlin / Compose client |
 | 13 Demo Tooling | How the demo video was produced |
+| 14 Desktop App | The Windows .exe: installer, API-key screen, packaging |
 
 ## 5. Architecture at a glance
 

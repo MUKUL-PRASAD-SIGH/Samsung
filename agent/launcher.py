@@ -28,17 +28,18 @@ import webbrowser
 from pathlib import Path
 from typing import List, Optional
 
-ROOT = Path(__file__).resolve().parents[1]
+FROZEN = bool(getattr(sys, "frozen", False))      # running as the packaged desktop app (PyInstaller)
+ROOT = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parents[1])
 ICON_SOURCE = ROOT / "frontend" / "public" / "kairos.svg"
 BROWSERS = ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "microsoft-edge", "brave-browser")
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
 def config_dir() -> Path:
-    base = Path(os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config"))
-    d = base / "kairos"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """Per-user settings folder (%APPDATA%\\Kairos on Windows, ~/.config/kairos on Linux): the access key and API keys live here."""
+    from agent.keystore import config_dir as _config_dir
+
+    return _config_dir()
 
 
 def load_or_create_key() -> str:
@@ -64,12 +65,28 @@ def decide_auth(host: str, force_login: bool, no_auth: bool, env_token: Optional
     return None
 
 
+def _platform_browsers() -> List[str]:
+    """Where browsers live when they are not on PATH: Windows and macOS install them in fixed places. Edge ships with Windows 10/11,
+    so a Windows machine always has a browser that can host the app window."""
+    found: List[str] = []
+    if sys.platform == "win32":
+        roots = [os.getenv(v) for v in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA")]
+        for root in filter(None, roots):
+            for rel in (("Microsoft", "Edge", "Application", "msedge.exe"), ("Google", "Chrome", "Application", "chrome.exe"),
+                        ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"), ("Chromium", "Application", "chrome.exe")):
+                found.append(str(Path(root, *rel)))
+    elif sys.platform == "darwin":
+        for app in ("Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"):
+            found.append(f"/Applications/{app}.app/Contents/MacOS/{app}")
+    return [p for p in found if Path(p).exists()]
+
+
 def find_browser() -> Optional[str]:
     for name in BROWSERS:
         exe = shutil.which(name)
         if exe:
             return exe
-    return None
+    return next(iter(_platform_browsers()), None)
 
 
 def health(url: str, timeout: float = 1.5) -> Optional[dict]:
@@ -96,9 +113,10 @@ def open_app(url: str, prefer_window: bool = True) -> str:
     if exe:
         try:
             profile = config_dir() / "browser-profile"
+            detach = {"creationflags": 0x00000008 | 0x00000200} if sys.platform == "win32" else {"start_new_session": True}
             subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}", "--window-size=1280,860",
                               "--use-fake-ui-for-media-stream" if os.getenv("KAIROS_FAKE_MEDIA") else "--no-first-run"],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **detach)
             return Path(exe).name
         except OSError:
             pass
@@ -170,7 +188,7 @@ def llm_description() -> str:
         return "OpenRouter"
     if os.getenv("USE_LOCAL_LLM"):
         return "your local model server"
-    return "no LLM key found: using canned demo replies. Set GROQ_API_KEY in .env for the real thing."
+    return "no API key yet: the app asks for your Groq / OpenRouter key on first run (or use its offline demo mode)"
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -185,7 +203,17 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _utf8_console() -> None:
+    """The banner has box-drawing and Greek characters; a Windows console on a legacy code page would raise UnicodeEncodeError."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    _utf8_console()
     args = parse_args(argv)
     if args.install_shortcut:
         entry = install_shortcut()
@@ -198,6 +226,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         load_dotenv(ROOT / ".env")
         load_dotenv(Path.cwd() / ".env")
     except ImportError:
+        pass
+
+    try:
+        from agent import keystore
+
+        keystore.load_into_environment()       # keys saved from the app's settings screen on an earlier run
+    except OSError:
         pass
 
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"

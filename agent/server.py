@@ -26,7 +26,7 @@ from agent.coordinator import AgentCoordinator
 from agent.warmup import run_full_warmup
 from agent.schemas.events import UserTextEvent, InterruptSignalEvent, AudioChunkEvent, VideoFrameEvent
 from agent.multimodal.tts import get_tts_backend
-from agent import metrics, security
+from agent import keystore, metrics, security
 from agent.logging_setup import epoch_var, request_id_var, session_id_var, setup_logging
 from agent.settings import get_settings
 from agent.trace_logger import TraceLogger
@@ -38,6 +38,7 @@ logger = logging.getLogger("agent.server")
 # taking the whole session down. Set TRACE_STRICT=1 to raise instead (matches dev/eval default).
 _trace_log_path = os.getenv("TRACE_LOG_PATH")
 _trace_strict = os.getenv("TRACE_STRICT", "0") == "1"
+keystore.load_into_environment()     # keys entered in the UI on an earlier run (the desktop app has no .env)
 coordinator = AgentCoordinator(
     trace_logger=TraceLogger(log_file=_trace_log_path, strict=_trace_strict),
     tts_backend=get_tts_backend(),     # None when piper-tts / the voice file is missing: the UI then hides the toggle
@@ -57,7 +58,7 @@ MAX_BINARY_FRAME_BYTES = 10 * 1024 * 1024
 # Phase G: abuse protection state (see agent/security.py and agent/settings.py)
 _limiter: Optional[security.ConnectionLimiter] = None
 _last_warmup: float = 0.0
-PROTECTED_HTTP = ("/warmup", "/metrics", "/auth/check")
+PROTECTED_HTTP = ("/warmup", "/metrics", "/auth/check", "/settings/keys")
 PROTECTED_PREFIXES = ("/exports/",)
 VIOLATIONS_BEFORE_DISCONNECT = 50
 
@@ -176,6 +177,53 @@ async def auth_check():
     return {"ok": True}
 
 
+_LABELS = {"groq": "Groq", "openrouter": "OpenRouter"}
+
+
+@app.get("/settings/keys")
+async def get_keys():
+    """Which LLM provider keys are configured (masked hints only; a key is never sent back) and which backend is active."""
+    return keystore.status()
+
+
+@app.put("/settings/keys")
+async def put_keys(request: Request):
+    """Store provider API keys entered in the UI: {"groq_api_key"?: str, "openrouter_api_key"?: str}. A missing field is left
+    alone, an empty string removes that key. Keys are checked with the provider before they are saved (a rejected key is
+    refused; an unreachable provider is not a reason to refuse), then the running agent switches to them without a restart."""
+    if not security.origin_allowed(request.headers.get("origin"), request.headers.get("host"), get_settings()):
+        return JSONResponse({"error": "origin not allowed"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+    updates: Dict[str, Optional[str]] = {}
+    warnings = []
+    for provider in keystore.PROVIDERS:
+        raw = body.get(f"{provider}_api_key")
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            return JSONResponse({"error": f"{provider}_api_key must be a string"}, status_code=400)
+        key = keystore.clean(raw)
+        problem = keystore.validate_format(provider, key)
+        if problem:
+            return JSONResponse({"error": problem, "field": provider}, status_code=400)
+        if key:
+            verdict = await asyncio.to_thread(keystore.check_online, provider, key)
+            if verdict is False:
+                return JSONResponse({"error": f"{_LABELS[provider]} did not accept that key.", "field": provider}, status_code=400)
+            if verdict is None:
+                warnings.append(f"Could not reach {_LABELS[provider]} to check the key; it was saved anyway.")
+        updates[provider] = key
+    keystore.save(updates)
+    coordinator.reload_llm()
+    logger.info("LLM provider keys updated (providers changed: %s)", ", ".join(sorted(updates)) or "none")
+    return {**keystore.status(), "warnings": warnings}
+
+
 @app.get("/exports/{name}")
 async def download_export(name: str):
     """Download a file the agent exported (so a remote user, whose editor is not on the server, can still get it)."""
@@ -198,6 +246,7 @@ async def health(request: Request):
         return body     # unauthenticated callers (load balancers) only learn that the process is up
     body.update({
         "sessions": len(coordinator.sessions),
+        "llm": {"backend": keystore.status()["backend"], "configured": keystore.status()["configured"]},
         "asr": coordinator.asr_processor.info(),
         "warmup": getattr(coordinator, "warmup_report", None),
         "tts": {"available": coordinator.tts_backend is not None, "backend": getattr(coordinator.tts_backend, "name", None)},

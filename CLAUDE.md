@@ -46,6 +46,10 @@ Gradle's build cache will replay an old test result: add `--no-build-cache` (and
 - **Server** (`server.py`, `security.py`, `settings.py`): `AUTH_TOKEN` bearer protection on `/ws`, `/warmup`, `/metrics`, `/auth/check`, `/exports/`; `/health` is public but minimal. Origin check, per-IP/session/message limits, `X-Frame-Options: DENY`. `agent/launcher.py` (`kairos`) picks auth policy by host and reuses a running instance.
 - **Clients**: the web UI (`frontend/src/App.jsx` is one big component) and the Android app (`android/app/.../state/AgentController.kt` + `ChatReducer.kt`, pure reducer) are thin clients of the same WebSocket protocol.
 
+## Desktop app (Windows `.exe`)
+
+`packaging/` (PyInstaller spec, Inno Setup script, entry script, icon) + `.github/workflows/build-desktop.yml` (windows-latest builds the installer and attaches it to a release). `agent/desktop.py` is the entry (first-run Piper voice download), `agent/keystore.py` stores the user's Groq/OpenRouter keys in `%APPDATA%\Kairos` (never in the repo, never echoed back), `PUT /settings/keys` validates them with the provider and calls `coordinator.reload_llm()` so no restart is needed; the UI side is `frontend/src/components/ApiKeysScreen.jsx`. The build deliberately excludes torch/sentence-transformers (keyword Tier 1 fallback). PyInstaller cannot cross-compile: the `.exe` is only built in CI; `pyinstaller packaging/kairos.spec` locally gives a Linux binary that is a valid smoke test of the spec. Tests that start the server must use a light mock coordinator (see `tests/test_keystore.py`): the real lifespan loads models and a few of them in one pytest process gets OOM-killed.
+
 ## Cross-cutting rules that are easy to break
 
 - **Protocol contract with Android**: the Kotlin `Protocol.kt` parses fixtures generated from the real pydantic classes by `scripts/dump_android_fixtures.py` (checked by `tests/test_android_fixtures.py`). Adding or changing an action type means updating the dump script, the fixtures, `Protocol.kt` and `ChatReducer.kt`.

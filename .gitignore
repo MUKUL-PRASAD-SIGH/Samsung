@@ -32,3 +32,8 @@ android/.idea/
 
 # KDE folder settings
 .directory
+
+# Desktop app build output (PyInstaller / Inno Setup)
+/dist/
+/build/
+*.egg-info/
