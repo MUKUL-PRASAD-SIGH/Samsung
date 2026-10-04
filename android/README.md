@@ -5,6 +5,8 @@ voice with barge-in, spoken replies you can talk over, camera sharing for the vi
 session (epoch, slots, in-flight calls, trace timeline, cognitive graph). The agent itself runs on the server; the app is a thin
 client over the same WebSocket protocol (`/ws/{session_id}`).
 
+**Demo video:** https://youtu.be/Q-XZVE3dy20
+
 | Chat | Barge-in | State |
 |---|---|---|
 | ![chat](docs/screenshots/chat_conversation.png) | ![barge-in](docs/screenshots/chat_barge_in.png) | ![state](docs/screenshots/app_state.png) |
