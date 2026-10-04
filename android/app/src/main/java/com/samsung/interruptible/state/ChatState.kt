@@ -30,6 +30,8 @@ data class AgentCard(
     val cancelReason: String? = null,
 )
 
+data class ExportItem(val id: Long, val filename: String, val path: String, val bytes: Int, val downloadPath: String, val openedWith: String?)
+
 data class ChatState(
     val connection: ConnState = ConnState.Disconnected,
     val messages: List<ChatMessage> = emptyList(),
@@ -44,6 +46,7 @@ data class ChatState(
     val artifact: AgentAction.Artifact? = null,
     val artifactAuthor: String? = null,
     val artifactLoading: Boolean = false,
+    val exports: List<ExportItem> = emptyList(),
     val graphNodes: List<AgentAction.GraphNode> = emptyList(),
     val graphEdges: List<AgentAction.GraphEdge> = emptyList(),
     // --- voice and camera

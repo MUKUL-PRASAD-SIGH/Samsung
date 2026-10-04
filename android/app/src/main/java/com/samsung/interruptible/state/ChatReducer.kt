@@ -82,7 +82,17 @@ object ChatReducer {
         is VoiceActivity -> onVoiceActivity(s, a, now)
         is AudioOut -> s.copy(agentSpeaking = true)
         is SpeechState -> onSpeechState(s, a, now)
+        is AgentAction.FileExported -> onExport(s, a, now)
         is AgentAction.Unknown -> s
+    }
+
+    private fun onExport(s: ChatState, a: AgentAction.FileExported, now: Long): ChatState {
+        val item = ExportItem(s.nextId, a.filename, a.path, a.bytes, a.downloadPath, a.openedWith)
+        // Show what was written as the workspace artifact, even when the model wrote the code inside the export call itself.
+        val withArtifact = if (a.preview.isNotEmpty())
+            s.copy(artifact = AgentAction.Artifact(a.filename, a.language, a.preview), artifactAuthor = "Kairos", artifactLoading = false) else s
+        return trace(withArtifact.copy(exports = withArtifact.exports + item, nextId = withArtifact.nextId + 1), now, "agent_step",
+            "Exported ${a.filename} (${a.bytes} bytes)")
     }
 
     private fun onToolCall(s: ChatState, a: ToolCall, now: Long): ChatState {

@@ -30,6 +30,7 @@ class ActionType(str, Enum):
     VOICE_ACTIVITY = "voice_activity"
     AUDIO_OUT = "audio_out"
     SPEECH_STATE = "speech_state"
+    FILE_EXPORTED = "file_exported"
 
 
 class BaseAction(BaseModel):
@@ -147,6 +148,21 @@ class SpeechStateAction(BaseAction):
     text: str = ""                 # the full planned reply
     spoken_text: Optional[str] = None
     spoken_ms: Optional[float] = None
+
+
+class FileExportedAction(BaseAction):
+    """The agent wrote a file for the user (export_artifact): where it is and how to open it in an editor."""
+
+    action_type: ActionType = ActionType.FILE_EXPORTED
+    call_id: Optional[str] = None
+    filename: str
+    path: str
+    bytes: int
+    language: str = ""
+    editor_uri: str = ""                 # vscode://file/... -- only meaningful when the server is on the user's machine
+    download_path: str = ""              # /exports/<filename> on the server
+    opened_with: Optional[str] = None    # the editor command the server launched, if any
+    preview: str = ""                    # the first part of the file, so the UI can show what was written
 
 
 class GraphNodePayload(BaseModel):

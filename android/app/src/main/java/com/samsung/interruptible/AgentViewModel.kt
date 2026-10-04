@@ -6,6 +6,7 @@ import android.media.AudioManager
 import androidx.lifecycle.AndroidViewModel
 import com.samsung.interruptible.audio.AudioRecordMic
 import com.samsung.interruptible.audio.AudioTrackSpeechOutput
+import com.samsung.interruptible.data.HttpAuthApi
 import com.samsung.interruptible.data.OkHttpTransport
 import com.samsung.interruptible.data.SharedPrefsSettingsStore
 import com.samsung.interruptible.state.AgentController
@@ -24,9 +25,10 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
         mic = AudioRecordMic(scope, app.getSystemService(Context.AUDIO_SERVICE) as AudioManager),
         store = SharedPrefsSettingsStore(app),
         scope = scope,
+        authApi = HttpAuthApi(),
     ).also {
         it.start()
-        it.connect()
+        it.begin()
     }
 
     override fun onCleared() {

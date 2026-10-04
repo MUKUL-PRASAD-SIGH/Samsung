@@ -34,6 +34,17 @@ object Urls {
         return "$base/ws/${sanitizeSessionId(sessionId)}$query"
     }
 
+    /** The HTTP(S) address of the same server, for plain requests (`/health`, `/auth/check`, `/exports/...`). */
+    fun httpBase(server: String): String {
+        val base = server.trim().trimEnd('/')
+        return when {
+            base.startsWith("wss://") -> "https://" + base.removePrefix("wss://")
+            base.startsWith("ws://") -> "http://" + base.removePrefix("ws://")
+            base.startsWith("http://") || base.startsWith("https://") -> base
+            else -> "http://$base"
+        }
+    }
+
     /** True when traffic (and the access token) would cross a network unencrypted. Loopback and emulator addresses are fine. */
     fun isInsecureRemote(server: String): Boolean {
         val s = server.trim().lowercase()

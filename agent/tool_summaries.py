@@ -70,7 +70,23 @@ def _cancel(result: Dict[str, Any]) -> str:
     return f"Booking {result.get('booking_id')} is {result.get('status', 'cancelled')}; your refund is {result.get('refund', 'pending')}."
 
 
+def _export(result: Dict[str, Any]) -> str:
+    if not result.get("exported"):
+        return str(result.get("error") or "I couldn't export anything: there is no code yet. Ask me to write some first.")
+    size = int(result.get("bytes") or 0)
+    where = f"opened it in {'VS Code' if result.get('opened_with') == 'code' else result.get('opened_with')}" if result.get("opened_with") \
+        else "it is ready to open from the Exports panel"
+    return f"Saved {result.get('filename')} ({size / 1000:.1f} KB) to {result.get('folder', 'your exports folder')}; {where}."
+
+
+def _timer(result: Dict[str, Any]) -> str:
+    label = result.get("label") or "timer"
+    return f"Your {label} timer ({result.get('seconds')} seconds) just finished."
+
+
 _SUMMARIZERS = {
+    "export_artifact": _export,
+    "set_timer": _timer,
     "search_flights": _flights,
     "search_hotels": _hotels,
     "book_flight": _book_flight,

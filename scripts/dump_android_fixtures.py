@@ -16,7 +16,7 @@ from pathlib import Path
 
 from agent.schemas.actions import (
     AgentStepAction, AudioOutAction, ClarificationAction, FillerAction, GraphEdgePayload, GraphNodePayload, GraphUpdateAction,
-    InFlightCallInfo, SpeechStateAction, SpokenResponseAction, StateSnapshotAction, ToolCallAction, ToolCancelAction,
+    FileExportedAction, InFlightCallInfo, SpeechStateAction, SpokenResponseAction, StateSnapshotAction, ToolCallAction, ToolCancelAction,
     TranscriptAction, VoiceActivityAction,
 )
 
@@ -58,6 +58,11 @@ def messages() -> list:
     ]
     for i, a in enumerate(acts):
         a.action_id = f"action_{i:02d}"          # random uuids would make the file differ on every run
+    acts.append(FileExportedAction(session_id=SID, epoch=2, call_id="call_7", filename="reverse.py", path="/home/me/kairos-exports/reverse.py",
+                                   bytes=52, language="python", editor_uri="vscode://file/home/me/kairos-exports/reverse.py",
+                                   download_path="/exports/reverse.py", opened_with="code", preview="def reverse(s):\n    return s[::-1]\n", timestamp=t))
+    for i, a in enumerate(acts):
+        a.action_id = f"action_{i:02d}"
     lines = [json.loads(a.model_dump_json()) for a in acts]
     lines += [{"type": "tts_status", "enabled": True, "available": True}, {"type": "error", "code": "rate_limit"}]
     return lines

@@ -30,11 +30,21 @@ import {
   SlidersHorizontal,
   ChevronRight,
   Volume2,
-  VolumeX
+  VolumeX,
+  LogOut,
+  FileCode2,
+  Square,
+  Trash2
 } from 'lucide-react';
 import MarkdownReply from './components/MarkdownReply';
 import TraceTimeline from './components/TraceTimeline';
 import useSpeechPlayer from './hooks/useSpeechPlayer';
+import { Logo, Wordmark } from './components/Brand';
+import LoginScreen from './components/LoginScreen';
+import SuggestionChips from './components/SuggestionChips';
+import ExportsList from './components/ExportsList';
+import { ToastStack, useToasts } from './components/Toasts';
+import { loadHistory, newSessionId, remove as removeChat, save as saveHistory, upsert as upsertChat } from './lib/history';
 
 // Cute Animated SVG Robot Character for the Active Swarm
 function MiniBotAvatar({ status, isWatching }) {
@@ -102,80 +112,6 @@ function MiniBotAvatar({ status, isWatching }) {
   );
 }
 
-const SAMPLE_CODE = `import React, { useState, useEffect } from "react";
-import { defineProperties } from "figma:react";
-
-export default function AnalogClock({
-  updateInterval = 1000,
-  secondHandColor = "red",
-  minuteHandColor = "black",
-  hourHandColor = "black",
-}) {
-  const [time, setTime] = useState({ hours: 0, minutes: 0, seconds: 0 });
-
-  useEffect(() => {
-    const updateClock = () => {
-      // Get London's local time using en-GB format
-      const londonTimeString = new Date().toLocaleTimeString("en-GB", {
-        timeZone: "Europe/London",
-        hour12: false
-      });
-      const [hoursStr, minutesStr, secondsStr] = londonTimeString.split(":");
-      setTime({
-        hours: parseInt(hoursStr, 10),
-        minutes: parseInt(minutesStr, 10),
-        seconds: parseInt(secondsStr, 10)
-      });
-    };
-
-    updateClock();
-    const timerId = setInterval(updateClock, updateInterval);
-    return () => clearInterval(timerId);
-  }, [updateInterval]);
-
-  return (
-    <div className="analog-clock-container">
-      {/* Clock Face Rendering */}
-    </div>
-  );
-}`;
-
-const DEMO_CLOCK_MESSAGES = [
-  {
-    id: 'msg-1',
-    role: 'user',
-    text: 'Hey Flippy! Write me a script for building an Analag Clock.',
-  },
-  {
-    id: 'msg-2',
-    role: 'agent',
-    text: 'Sure. Let me spawn an agent which will write the required code for you analogue clock, which language do you prefer? and also enter a name for the agent as well.',
-  },
-  {
-    id: 'msg-3',
-    role: 'user',
-    text: 'Give me the code in TypeScript and name the agent as "bob"',
-  }
-];
-
-const DEMO_CLOCK_BOT = {
-  call_id: 'agent_bob_01',
-  name: 'bob',
-  role: 'TypeScript Generator',
-  tool_name: 'generate_code',
-  arguments: { language: 'TypeScript', component: 'AnalogClock' },
-  epoch: 1,
-  status: 'working',
-  thought: 'Compiling London timezone-aware analogue clock component with custom hand colors...',
-};
-
-const DEMO_CLOCK_ARTIFACT = {
-  title: 'AnalogClock.tsx',
-  language: 'typescript',
-  content: SAMPLE_CODE,
-  author: 'bob',
-  description: 'Hi, I am bob. Here is the code in typescript for your Analogue Clock interface.',
-};
 
 // Captures mic audio, resamples to 16 kHz mono and posts 100 ms Int16 PCM frames to the main thread.
 const PCM_WORKLET_SOURCE = `
@@ -227,8 +163,54 @@ export default function App() {
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeChat, setActiveChat] = useState('');
-  const [sessionId] = useState(() => 'sess_' + Math.random().toString(36).substring(2, 9));
+  // A conversation is a server session. The id is remembered so a reload (or reopening the app) continues it.
+  const [sessionId, setSessionId] = useState(() => localStorage.getItem('kairos.session') || newSessionId());
+  useEffect(() => { localStorage.setItem('kairos.session', sessionId); }, [sessionId]);
+  const [history, setHistory] = useState(() => loadHistory());
+  const { toasts, push: toast, dismiss: dismissToast } = useToasts();
+  const [exportsList, setExportsList] = useState([]);   // files the agent exported (export_artifact)
+
+  // Sign-in: only when the server has an access key configured. 'checking' | 'login' | 'ok'
+  const [auth, setAuth] = useState('checking');
+  const [authToken, setAuthToken] = useState(() => getAuthToken());
+  const [authNotice, setAuthNotice] = useState('');
+  useEffect(() => {
+    (async () => {
+      try {
+        const health = await (await fetch('/health')).json();
+        if (!health.auth_required) return setAuth('ok');
+        if (authToken) {
+          const r = await fetch('/auth/check', { headers: { Authorization: `Bearer ${authToken}` } });
+          if (r.ok) return setAuth('ok');
+          localStorage.removeItem('authToken');
+          setAuthToken('');
+          setAuthNotice('Your saved key is no longer valid. Please sign in again.');
+        }
+        setAuth('login');
+      } catch {
+        setAuth('ok');   // server unreachable: show the app, which has its own reconnect banner
+      }
+    })();
+  }, []);
+  const signIn = async (key) => {
+    let r;
+    try {
+      r = await fetch('/auth/check', { headers: { Authorization: `Bearer ${key}` } });
+    } catch {
+      return 'Cannot reach the server. Is it running?';
+    }
+    if (!r.ok) return 'That key was not accepted.';
+    localStorage.setItem('authToken', key);
+    setAuthToken(key);
+    setAuthNotice('');
+    setAuth('ok');
+    return true;
+  };
+  const signOut = () => {
+    localStorage.removeItem('authToken');
+    setAuthToken('');
+    setAuth('login');
+  };
   const [connected, setConnected] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false); // hands-free voice streaming is on
@@ -257,6 +239,7 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState('openai/gpt-oss-120b');
   const [asrEngine, setAsrEngine] = useState('faster-whisper');
   useEffect(() => {
+    if (auth !== 'ok') return;
     const token = getAuthToken();
     fetch('/health', token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
       .then((r) => r.json())
@@ -268,16 +251,7 @@ export default function App() {
         }
       })
       .catch(() => {});
-  }, [connected]);
-
-  // Chats list matching the screenshots
-  const [chats, setChats] = useState([
-    'Analog Clock React app',
-    'Simple Design System',
-    'Figma variable planning',
-    'OKCLH token algorithm',
-    'Component naming advice',
-  ]);
+  }, [connected, auth]);
 
   // Current session snapshot
   const [snapshot, setSnapshot] = useState({
@@ -310,41 +284,70 @@ export default function App() {
     }
   }, [messages, spawnedBots]);
 
-  // Connect WebSocket to FastAPI backend
+  // Connect WebSocket to FastAPI backend (after sign-in), and keep it connected: drops are retried with backoff.
   useEffect(() => {
+    if (auth !== 'ok') return undefined;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const token = getAuthToken();
     const wsUrl = `${protocol}//${window.location.host}/ws/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    let ws = null;
+    let closedByUs = false;
+    let attempt = 0;
+    let retryTimer = null;
+    let everConnected = false;
 
-    ws.onopen = () => {
-      setConnected(true);
-      addTrace('system', `Connected session ${sessionId}`);
-    };
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    ws.onclose = () => {
-      setConnected(false);
-      stopVoiceStream(false); // the server dropped the stream too; just release the mic locally
-      stopSharing();
-      addTrace('system', 'Disconnected from coordinator stream');
-    };
+      ws.onopen = () => {
+        attempt = 0;
+        everConnected = true;
+        setConnected(true);
+        addTrace('system', `Connected session ${sessionId}`);
+      };
 
-    ws.onmessage = (event) => {
-      try {
-        const action = JSON.parse(event.data);
-        handleIncomingAction(action);
-      } catch (e) {
-        console.error('Error handling WebSocket action:', e);
-      }
+      ws.onclose = () => {
+        setConnected(false);
+        stopVoiceStream(false); // the server dropped the stream too; just release the mic locally
+        stopSharing();
+        if (closedByUs) return;
+        addTrace('system', 'Disconnected from coordinator stream');
+        if (!everConnected && attempt >= 2) {
+          // Never got in: most likely a wrong/expired key (the server refuses the handshake). Ask again instead of looping.
+          fetch('/auth/check', { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then((r) => {
+            if (r.status === 401) { localStorage.removeItem('authToken'); setAuthToken(''); setAuthNotice('The server did not accept your key. Please sign in again.'); setAuth('login'); }
+          }).catch(() => {});
+        }
+        const delay = Math.min(8000, 500 * 2 ** attempt++);
+        retryTimer = setTimeout(connect, delay);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const action = JSON.parse(event.data);
+          if (action.type === 'error') {
+            const text = { rate_limit: 'You are sending too fast; a message was dropped.', too_large: 'That message was too large.', bad_json: 'The server could not read a message.' }[action.code] || `Server: ${action.code}`;
+            toast(text, 'error');
+            return;
+          }
+          if (action.type === 'tts_status') return;
+          handleIncomingAction(action);
+        } catch (e) {
+          console.error('Error handling WebSocket action:', e);
+        }
+      };
     };
+    connect();
 
     return () => {
+      closedByUs = true;
+      clearTimeout(retryTimer);
       stopVoiceStream(false);
       stopSharing();
-      ws.close();
+      if (ws) ws.close();
     };
-  }, [sessionId]);
+  }, [sessionId, auth]);
 
   const addTrace = (type, text, payload = null) => {
     const now = Date.now();
@@ -473,6 +476,19 @@ export default function App() {
         setRightSidebarOpen(true);
       }
 
+
+    } else if (action.action_type === 'file_exported') {
+      setExportsList((prev) => [...prev, { ...action, id: action.action_id }]);
+      if (action.preview) {
+        // Show what was written, as the workspace artifact, even when the model wrote the code inside the export call itself.
+        setArtifact({ title: action.filename, language: action.language, content: action.preview, author: 'Kairos',
+          description: `Saved to ${action.path}` });
+        setArtifactLoading(false);
+      }
+      addTrace('agent_step', `Exported ${action.filename} (${action.bytes} bytes) to ${action.path}`, action);
+      toast(`Saved ${action.filename}${action.opened_with ? ' and opened it in VS Code' : ''}`, 'ok', 5000);
+      setRightSidebarOpen(true);
+      setActiveRightTab('exports');
 
     } else if (action.action_type === 'tool_cancel') {
       setSpawnedBots((prev) => 
@@ -604,64 +620,81 @@ export default function App() {
     const text = (customText !== null ? customText : inputText).trim();
     if (!text) return;
 
-    // Add user message
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: Math.random().toString(),
-        role: 'user',
-        text,
-      }
-    ]);
+    // Never show a message as sent when it could not be: say so, and keep what the user typed.
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      toast('Not connected yet — reconnecting. Your message was not sent.', 'error');
+      return;
+    }
 
-    // Send to backend via WebSocket. Whether an agent gets spawned and an artifact
-    // gets produced is entirely up to the real backend/LLM response (tool_call /
-    // agent_step actions handled in handleIncomingAction) -- not guessed here from
-    // keywords in the raw text.
+    setMessages((prev) => [...prev, { id: Math.random().toString(), role: 'user', text }]);
     setInputText('');
     // "this" / "on my screen" must mean what is visible NOW, so push a fresh frame ahead of the text.
     if (shareRef.current) await captureAndSendFrame();
+    // Whether an agent gets spawned and an artifact gets produced is entirely up to the real backend/LLM response
+    // (tool_call / agent_step actions handled in handleIncomingAction) -- not guessed here from keywords in the raw text.
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'user_text', text }));
     }
-
-    setInputText('');
   };
 
-  const handleSelectChat = (chatName) => {
-    setActiveChat(chatName);
-    if (chatName === 'Analog Clock React app') {
-      setMessages(DEMO_CLOCK_MESSAGES);
-      setSpawnedBots([DEMO_CLOCK_BOT]);
-      setArtifact(DEMO_CLOCK_ARTIFACT);
-      setRightSidebarOpen(true);
-    } else {
-      // Switch to other chat topic
-      setMessages([
-        {
-          id: 'prev-1',
-          role: 'user',
-          text: `Reviewing notes for ${chatName}`,
-        },
-        {
-          id: 'prev-2',
-          role: 'agent',
-          text: `Opened "${chatName}". How can I help you proceed with this?`,
-        }
-      ]);
-      setSpawnedBots([]);
-      setArtifact(null);
-      setRightSidebarOpen(false);
-    }
+  // Remember every conversation (it is a server session) so it can be reopened from the sidebar.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    setHistory((h) => { const next = upsertChat(h, sessionId, messages); saveHistory(next); return next; });
+  }, [messages, sessionId]);
+
+  const resetWorkspace = () => {
+    setSpawnedBots([]);
+    setArtifact(null);
+    setArtifactLoading(false);
+    setGraphNodes([]);
+    setGraphEdges([]);
+    setExportsList([]);
+    setTraceLogs([]);
+    setSnapshot({ epoch: 1, intent: 'ready', slots: {}, in_flight_calls: [], last_updated: new Date().toISOString() });
+    setRightSidebarOpen(false);
   };
 
   const handleCreateNewChat = () => {
-    setActiveChat('');
     setMessages([]);
-    setSpawnedBots([]);
-    setArtifact(null);
-    setRightSidebarOpen(false);
+    resetWorkspace();
+    setSessionId(newSessionId());
   };
+
+  const handleDeleteChat = (id) => {
+    setHistory((h) => { const next = removeChat(h, id); saveHistory(next); return next; });
+    if (id === sessionId) handleCreateNewChat();
+  };
+
+  const handleSelectChat = (entry) => {
+    if (entry.id === sessionId) return;
+    resetWorkspace();
+    setMessages(entry.messages || []);
+    setSessionId(entry.id);   // reconnects with the same session id: the agent still remembers it while the server is up
+  };
+
+  // vscode://file/<path> opens the file in a desktop VS Code on THIS machine. It only works when the server runs on the same
+  // computer; otherwise use Download.
+  const openInEditor = (item) => {
+    if (!item.editor_uri) return;
+    window.location.href = item.editor_uri;
+    toast('Asking your browser to open VS Code… (works when the server runs on this computer; otherwise use Download)', 'info', 6000);
+  };
+
+  const interruptAgent = () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'interrupt', reason: 'ui_barge_in' }));
+    speech.flush();
+    toast('Interrupted', 'info', 1500);
+  };
+
+  // Esc stops whatever Kairos is doing right now (running tools, speech).
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') interruptAgent(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   const handleCopyCode = () => {
     if (!artifact?.content) return;
@@ -724,7 +757,7 @@ export default function App() {
       addTrace('vision', `Sharing ${kind} (1 frame/s, analyzed only when you ask about it)`);
       await captureAndSendFrame();
     } catch (err) {
-      alert(`${kind === 'screen' ? 'Screen share' : 'Camera'} error: ${err.message}`);
+      toast(`${kind === 'screen' ? 'Screen sharing' : 'Camera'} unavailable: ${err.name === 'NotAllowedError' ? 'permission was denied. Allow it in your browser\'s site settings.' : err.message}`, 'error', 7000);
     }
   };
 
@@ -760,7 +793,7 @@ export default function App() {
 
   const startVoiceStream = async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      alert('Not connected to the agent yet — try again in a moment.');
+      toast('Not connected yet — try again in a moment.', 'error');
       return;
     }
     try {
@@ -790,7 +823,7 @@ export default function App() {
       wsRef.current.send(JSON.stringify({ type: 'voice_stream', action: 'start' }));
       setIsRecording(true);
     } catch (err) {
-      alert('Microphone error: ' + err.message);
+      toast(err.name === 'NotAllowedError' ? 'Microphone permission was denied. Allow it in your browser\'s site settings, then try again.' : `Microphone unavailable: ${err.message}`, 'error', 7000);
     }
   };
 
@@ -819,14 +852,20 @@ export default function App() {
 
   // True when user is on home screen (no messages yet)
   const isHomeScreen = messages.length === 0;
+  // Anything running or speaking right now: shows the Stop button.
+  const agentBusy = (snapshot.in_flight_calls || []).length > 0 || speech.speaking || spawnedBots.some((b) => b.status === 'working');
+
+  if (auth === 'checking') {
+    return <div className="h-screen w-screen flex items-center justify-center bg-[#0b0e14]"><Logo className="w-14 h-14 animate-pulse" /></div>;
+  }
+  if (auth === 'login') return <LoginScreen onSubmit={signIn} initialError={authNotice} />;
 
   return (
     <div 
       className="h-screen w-screen flex bg-black text-slate-100 font-sans select-none overflow-hidden relative"
       style={{
-        backgroundImage: `linear-gradient(to bottom, rgba(8, 10, 15, 0.82), rgba(8, 10, 15, 0.90)), url('/bg-f1.jpg')`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
+        // A calm deep-navy field with a faint gold glow (no photo to download, nothing to attribute).
+        backgroundImage: 'radial-gradient(70% 55% at 50% 0%, rgba(212,160,23,0.09), transparent 70%), radial-gradient(50% 45% at 90% 100%, rgba(56,189,248,0.07), transparent 70%), linear-gradient(to bottom, #0b0e14, #080a10)',
       }}
     >
       {/* ─────────────────────────────────────────────────────────────
@@ -845,12 +884,15 @@ export default function App() {
                 >
                   <Menu className="w-4 h-4" />
                 </button>
-                <span className="text-xs font-semibold text-slate-200 tracking-tight">Flippy chats</span>
+                <span className="flex items-center gap-2">
+                  <Logo className="w-5 h-5" />
+                  <span className="text-xs font-semibold text-amber-200 tracking-[0.2em]" style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}>KAIROS</span>
+                </span>
               </div>
               <button 
                 onClick={handleCreateNewChat}
                 className="w-5 h-5 rounded-full border border-slate-600 hover:border-slate-400 flex items-center justify-center text-slate-300 hover:text-white transition"
-                title="New Chat (Home)"
+                title="New conversation"
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
@@ -870,24 +912,26 @@ export default function App() {
 
             {/* Chats List */}
             <div className="space-y-1 flex-1 overflow-y-auto">
-              <span className="text-[11px] font-medium text-slate-500 px-2 block mb-1.5">Chats</span>
+              <span className="text-[11px] font-medium text-slate-500 px-2 block mb-1.5">Conversations</span>
+              {history.length === 0 && <p className="text-[11px] text-slate-600 px-2 leading-relaxed">Your conversations appear here. Start one on the right.</p>}
               <div className="space-y-0.5">
-                {chats
-                  .filter((c) => c.toLowerCase().includes(searchQuery.toLowerCase()))
+                {history
+                  .filter((c) => c.title.toLowerCase().includes(searchQuery.toLowerCase()))
                   .map((chat) => {
-                    const isActive = activeChat === chat;
+                    const isActive = sessionId === chat.id;
                     return (
-                      <button
-                        key={chat}
-                        onClick={() => handleSelectChat(chat)}
-                        className={`w-full text-left px-3 py-2 rounded-xl text-xs transition truncate block ${
-                          isActive
-                            ? 'bg-[#252830] text-white font-medium shadow-sm'
-                            : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                        }`}
-                      >
-                        {chat}
-                      </button>
+                      <div key={chat.id} className={`group flex items-center rounded-xl transition ${isActive ? 'bg-[#252830]' : 'hover:bg-white/5'}`}>
+                        <button
+                          onClick={() => handleSelectChat(chat)}
+                          className={`flex-1 text-left px-3 py-2 text-xs truncate ${isActive ? 'text-white font-medium' : 'text-slate-400 group-hover:text-slate-200'}`}
+                          title={chat.title}
+                        >
+                          {chat.title}
+                        </button>
+                        <button onClick={() => handleDeleteChat(chat.id)} className="opacity-0 group-hover:opacity-100 pr-2 text-slate-500 hover:text-rose-400 transition" title="Delete conversation">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     );
                   })}
               </div>
@@ -905,20 +949,23 @@ export default function App() {
               <span className="font-medium">Settings</span>
             </button>
 
-            {/* User Profile */}
+            {/* Session / sign out */}
             <div className="pt-2 border-t border-white/5 flex items-center gap-2.5 px-1">
-              <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-amber-400 to-indigo-500 flex items-center justify-center text-[10px] font-bold text-white shrink-0 overflow-hidden ring-1 ring-white/20">
-                <img 
-                  src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=64&auto=format&fit=crop&q=80" 
-                  alt="user" 
-                  className="w-full h-full object-cover"
-                  onError={(e) => { e.target.style.display = 'none'; }}
-                />
-              </div>
-              <span className="text-xs text-slate-300 truncate font-sans">flippy@figma.com</span>
+              <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-amber-300 to-amber-600 flex items-center justify-center text-[11px] font-bold text-[#0b0e14] shrink-0" style={{ fontFamily: 'Georgia, serif' }}>Κ</div>
+              <span className="text-[11px] text-slate-400 truncate font-mono flex-1" title={`Session ${sessionId}`}>{authToken ? 'Signed in' : 'This device'}</span>
+              {authToken && (
+                <button onClick={signOut} className="text-slate-500 hover:text-white transition" title="Sign out"><LogOut className="w-3.5 h-3.5" /></button>
+              )}
             </div>
           </div>
         </aside>
+      )}
+
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      {!connected && (
+        <div className="absolute top-0 left-0 right-0 z-50 flex items-center justify-center gap-2 bg-amber-500/15 border-b border-amber-400/30 text-amber-200 text-[11px] py-1.5 backdrop-blur-md" role="status">
+          <span className="w-2 h-2 rounded-full bg-amber-300 animate-pulse" /> Reconnecting to Kairos…
+        </div>
       )}
 
       {/* Floating Reopen Button if Left Sidebar is Collapsed */}
@@ -941,8 +988,8 @@ export default function App() {
         <header className="h-11 px-6 flex items-center justify-between z-20 shrink-0">
           <div className="flex items-center gap-2">
             {!sidebarOpen && <div className="w-8" />} {/* spacing for floating burger */}
-            <span className="text-xs font-semibold text-slate-400/80 tracking-wide font-mono">
-              Flippy Real-Time Agent
+            <span className="text-xs font-semibold text-amber-200/70 tracking-[0.25em]" style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}>
+              KAIROS · ΚΑΙΡΟΣ
             </span>
           </div>
 
@@ -957,6 +1004,11 @@ export default function App() {
               <span>Epoch #{snapshot.epoch}</span>
             </div>
 
+            {agentBusy && (
+              <button onClick={interruptAgent} className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border border-rose-500/50 bg-rose-500/15 text-rose-300 text-[11px] font-mono hover:bg-rose-500/25 transition" title="Stop everything (Esc)">
+                <Square className="w-3 h-3 fill-current" /> Stop <kbd className="text-[9px] opacity-60">Esc</kbd>
+              </button>
+            )}
             {/* Connection badge */}
             <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
               <span className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-rose-500'}`} />
@@ -987,9 +1039,7 @@ export default function App() {
         {/* ─── SCENARIO A: HOME SCREEN (Exact match with user screenshot) ─── */}
         {isHomeScreen ? (
           <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
-            <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-white mb-10 drop-shadow-lg select-none">
-              Project name
-            </h1>
+            <div className="mb-10"><Wordmark size="lg" /></div>
 
             {/* Centered Floating Input Card */}
             <div className="w-full max-w-xl bg-[#181a20]/90 backdrop-blur-md border border-white/10 rounded-2xl p-4 shadow-2xl flex flex-col gap-3 transition focus-within:border-slate-500">
@@ -1040,6 +1090,10 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <SuggestionChips onPick={(t) => handleSendMessage(t)} cameraOn={sharing !== 'off'} />
+            <p className="text-[11px] text-slate-600 mt-8 select-none">
+              Tip: press <kbd className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-slate-400">Esc</kbd> to interrupt at any moment, or just start talking in hands-free mode.
+            </p>
           </div>
         ) : (
           /* ─── SCENARIO B: MORPHED CONVERSATION VIEW ─── */
@@ -1068,7 +1122,7 @@ export default function App() {
 
                   return (
                     <div key={m.id} className="flex items-start gap-3">
-                      {/* Flippy Icon */}
+                      {/* Agent avatar */}
                       <div className="w-6 h-6 rounded-md bg-[#252830] border border-white/10 flex items-center justify-center shrink-0 mt-0.5">
                         <Sparkles className="w-3.5 h-3.5 text-amber-400" />
                       </div>
@@ -1119,7 +1173,7 @@ export default function App() {
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                    placeholder="Ask Flippy or interrupt active agents..."
+                    placeholder="Ask Kairos, or interrupt…"
                     className="w-full bg-transparent text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none px-1 font-sans"
                   />
                   <div className="flex items-center justify-between pt-1 border-t border-white/5">
@@ -1203,6 +1257,14 @@ export default function App() {
                             {copiedCode ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                             <span>{copiedCode ? 'Copied' : 'Copy'}</span>
                           </button>
+                          <button
+                            onClick={() => handleSendMessage(`Save this code as ${artifact.title || 'code.txt'} and open it in VS Code`)}
+                            className="flex items-center gap-1 hover:text-sky-300 transition text-xs text-sky-400"
+                            title="Ask Kairos to save this file and open it in VS Code"
+                          >
+                            <FileCode2 className="w-3 h-3" />
+                            <span>Open in VS Code</span>
+                          </button>
                         </div>
                         <div className="p-3 font-mono text-[11px] leading-relaxed overflow-x-auto text-slate-300 max-h-[340px]">
                           <pre className="flex">
@@ -1237,7 +1299,7 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-                      <p className="text-xs text-slate-500 font-mono">No artifact yet. Ask Flippy to build something.</p>
+                      <p className="text-xs text-slate-500 font-mono">No artifact yet. Ask Kairos to write some code.</p>
                     </div>
                   )}
                 </div>
@@ -1281,6 +1343,12 @@ export default function App() {
                       >
                         Cognitive Graph
                       </button>
+                      <button
+                        onClick={() => setActiveRightTab('exports')}
+                        className={`px-2.5 py-1 rounded-md transition ${activeRightTab === 'exports' ? 'bg-[#282b34] text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+                      >
+                        Exports{exportsList.length > 0 ? ` (${exportsList.length})` : ''}
+                      </button>
                     </div>
                   </div>
 
@@ -1291,7 +1359,7 @@ export default function App() {
                       <div className="space-y-2.5">
                         {spawnedBots.length === 0 ? (
                           <div className="text-center py-6 text-slate-500 text-xs font-mono">
-                            No worker bots spawned yet. Ask Flippy to build or execute a task!
+                            No worker agents yet. Ask Kairos to build something.
                           </div>
                         ) : (
                           spawnedBots.map((bot) => {
@@ -1409,6 +1477,10 @@ export default function App() {
                     )}
 
                     {/* TAB 4: Cognitive Graph Visualizer */}
+                    {activeRightTab === 'exports' && (
+                      <ExportsList items={exportsList} authToken={authToken} onOpenInEditor={openInEditor} />
+                    )}
+
                     {activeRightTab === 'graph' && (() => {
                       const columns = { turn: 0, entity: 1, artifact: 2 };
                       const colColors = { turn: '#38bdf8', entity: '#facc15', artifact: '#c084fc' };

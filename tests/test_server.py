@@ -15,4 +15,4 @@ def test_server_demo_ui():
     client = TestClient(app)
     response = client.get("/")
     assert response.status_code == 200
-    assert "Interruptible Real-Time Agent Demo" in response.text
+    assert "Kairos" in response.text

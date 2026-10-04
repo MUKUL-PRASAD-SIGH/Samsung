@@ -38,7 +38,7 @@ class ProtocolTest {
         messages.filterIsInstance<ServerMessage.Action>().map { it.action }.filterIsInstance<T>()
 
     @Test fun everyServerMessageInTheFixtureParses() {
-        assertEquals(17, messages.size)
+        assertEquals(18, messages.size)
         assertTrue("no fixture may degrade to Unknown", messages.none { it is ServerMessage.Action && it.action is AgentAction.Unknown })
     }
 
@@ -115,6 +115,17 @@ class ProtocolTest {
         assertEquals("I found two", stopped.spokenText)
         assertEquals(900.0, stopped.spokenMs!!, 0.0)
         assertEquals("I found two flights. The cheapest is IndiGo.", stopped.text)
+    }
+
+    @Test fun fileExportedCarriesEverythingTheAppNeeds() {
+        val e = all<AgentAction.FileExported>().single()
+        assertEquals("reverse.py", e.filename)
+        assertEquals("/home/me/kairos-exports/reverse.py", e.path)
+        assertEquals(52, e.bytes)
+        assertEquals("/exports/reverse.py", e.downloadPath)
+        assertEquals("vscode://file/home/me/kairos-exports/reverse.py", e.editorUri)
+        assertEquals("code", e.openedWith)
+        assertEquals("def reverse(s):\n    return s[::-1]\n", e.preview)
     }
 
     @Test fun controlMessages() {

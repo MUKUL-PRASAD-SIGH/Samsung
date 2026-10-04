@@ -1,6 +1,28 @@
-# Interruptible Real-Time Agent
+<p align="center"><img src="frontend/public/kairos.svg" width="96" alt="Kairos"></p>
 
-Full-duplex, interruptible real-time agent — Samsung Hackathon, Theme 05.
+# Kairos · Καιρός
+
+*Kairos* is the Greek word for the right, opportune moment: the instant when acting matters. This is a full-duplex,
+interruptible real-time agent (Samsung Hackathon, Theme 05): talk over it, correct it mid-task, and it adapts instead of finishing the
+wrong thing.
+
+## Start it in one step
+
+```bash
+pip install -e ".[tts,embeddings]"          # once (plus: cd frontend && npm ci && npm run build)
+kairos                                      # starts the server and opens Kairos in its own window
+kairos --install-shortcut                   # (Linux) adds a Kairos icon to your application launcher: click it, you're in
+kairos --login                              # require an access key, to see the sign-in screen
+```
+
+`kairos` is loopback-only with no key by default (your machine), generates and requires an access key as soon as you serve a network
+(`--host 0.0.0.0`), reuses an instance that is already running, and tells you what is missing (LLM key, UI build) instead of failing.
+Docker and the Android app are below.
+
+What it can do: travel search and booking, weather, **write code and export it into VS Code**, timers (cancellable), look at your
+camera, hands-free voice you can talk over, spoken replies, and a live view of its own state, trace and memory graph.
+
+## Architecture
 
 A user talks or types; the agent classifies interruptions, plans with an LLM, calls tools, and
 streams every step to a React UI. The core is an **epoch model**: each session has a monotonically
@@ -12,7 +34,7 @@ Browser (React/Vite)                    FastAPI + WebSocket  (/ws/{session_id})
  ├ text input ───────────────┐           ┌──────────────────────────────────────────────┐
  ├ hands-free mic (AudioWorklet,  │       │ EVENT QUEUE  ← user_text / audio / interrupt / tool_result
  │   16 kHz PCM, 100 ms frames) ──┼──────►│                                              │
- └ (camera/screen: not built)     │       │ Tier 1  interrupt classifier (keyword mode)  │
+ └ (camera/screen frames)     │       │ Tier 1  interrupt classifier (keyword mode)  │
                                   │       │ Tier 2  fast-path fillers / acks (templates) │
  ◄── actions (JSON over WS) ──────┘       │ Tier 3  Planner → LLM (Groq gpt-oss-120b)    │
    filler · spoken_response · tool_call   │           ├ tool router (schemas, read/state)│

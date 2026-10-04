@@ -178,7 +178,7 @@ def test_auth_token_protects_websocket_and_sensitive_http(make_client):
     assert c.post("/warmup").status_code == 401 and c.get("/metrics").status_code == 401
     assert c.get("/metrics", headers={"authorization": "Bearer hunter2"}).status_code == 200
     anon = c.get("/health").json()
-    assert anon == {"status": "ok"}                                       # a load balancer learns only that we are up
+    assert anon == {"status": "ok", "auth_required": True}               # a load balancer learns it is up; the login screen learns a key is needed
     assert "sessions" in c.get("/health", headers={"authorization": "Bearer hunter2"}).json()
 
 

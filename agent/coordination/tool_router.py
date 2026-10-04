@@ -170,6 +170,50 @@ class ToolRouter:
             # Handled directly by coordinator execution engine for streaming
             return {"status": "completed", "agent_name": name, "role": role, "goal": goal}
 
+        async def _export_artifact(**kwargs):
+            # Executed by the coordinator, which owns the per-session artifacts (the code a worker just wrote).
+            return {"exported": False}
+
+        self.register_tool(
+            name="export_artifact",
+            description=(
+                "Save code or text to a file the user can open, and open it in their code editor (VS Code). Use it when the user asks "
+                "to save, export, download or open something in an editor. With no `content` it exports the code the last "
+                "spawned worker wrote; if no code exists yet, call spawn_agent first. State-modifying."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "File name with extension, e.g. debounce.ts (no folders)"},
+                    "content": {"type": "string", "description": "The file text. Omit to export the latest generated code."},
+                    "language": {"type": "string", "description": "e.g. python, typescript, html"},
+                    "open_in": {"type": "string", "enum": ["vscode", "none"], "description": "Open in VS Code (default) or just save"},
+                },
+                "required": [],
+            },
+            is_state_modifying=True,
+            handler=_export_artifact,
+        )
+
+        async def _set_timer(seconds: int = 10, label: str = "timer", **kwargs):
+            await asyncio.sleep(seconds)
+            return {"label": label, "seconds": seconds, "status": "finished"}
+
+        self.register_tool(
+            name="set_timer",
+            description="Start a countdown timer (1-300 seconds). The agent tells the user when it finishes. Can be cancelled.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+                    "label": {"type": "string", "description": "What the timer is for, e.g. tea"},
+                },
+                "required": ["seconds"],
+            },
+            is_state_modifying=False,
+            handler=_set_timer,
+        )
+
         async def _analyze_frame(question: str = "Describe what you see.", **kwargs):
             # Executed by the coordinator, which owns the per-session frame buffer and the vision backend.
             return {"answer": "", "has_frame": False}

@@ -182,6 +182,19 @@ class ChatReducerTest {
         assertTrue(s.graphEdges.isEmpty())
     }
 
+    @Test fun anExportShowsWhatWasWrittenAndListsTheFile() {
+        val s = ChatState().then(AgentAction.FileExported(2, 0.0, "reverse.py", "/h/reverse.py", 52, "python", "vscode://x", "/exports/reverse.py", "code",
+            "def reverse(s):\n    return s[::-1]\n"))
+        assertEquals(listOf("reverse.py"), s.exports.map { it.filename })
+        assertEquals("/exports/reverse.py", s.exports.single().downloadPath)
+        assertEquals(AgentAction.Artifact("reverse.py", "python", "def reverse(s):\n    return s[::-1]\n"), s.artifact)
+        assertEquals("Kairos", s.artifactAuthor)
+        assertTrue(s.trace.last().text.contains("reverse.py"))
+        val again = s.then(AgentAction.FileExported(2, 0.0, "b.py", "/h/b.py", 1, "python", "", "/exports/b.py", null, ""))
+        assertEquals(2, again.exports.size)
+        assertEquals("an export without a preview leaves the artifact alone", "reverse.py", again.artifact!!.title)
+    }
+
     // ------------------------------------------------------------------------ connection and server errors
     @Test fun connectionChangesAreTracedAndClearTransientVoiceState() {
         var s = ChatState(userSpeaking = true, livePartial = "no w", agentSpeaking = true, ducked = true)

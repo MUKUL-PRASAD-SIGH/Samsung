@@ -1,4 +1,4 @@
-# Interruptible Agent — Android app
+# Kairos · Καιρός — Android app
 
 A native Kotlin / Jetpack Compose client for the interruptible-agent server. It does what the web console does: chat, hands-free
 voice with barge-in, spoken replies you can talk over, camera sharing for the vision tool, and the agent's own view of the
@@ -53,7 +53,7 @@ Full duplex on the device:
   Stop flushes locally without waiting for the round trip. A cut-off reply is annotated in the chat: *You heard: “…” then interrupted*.
 - After a reconnect the app re-announces what it wants (spoken replies, hands-free) because the server keeps no per-connection preferences.
 
-## Tests (98 JVM tests, no emulator or device needed)
+## Tests (125 JVM tests, no emulator or device needed)
 
 `./gradlew testDebugUnitTest` runs:
 

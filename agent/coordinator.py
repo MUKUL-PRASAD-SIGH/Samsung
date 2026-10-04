@@ -10,6 +10,7 @@ Manages:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 import logging
 import os
 import re
@@ -38,12 +39,14 @@ from agent.schemas.actions import (
     GraphUpdateAction,
     TranscriptAction,
     VoiceActivityAction,
+    FileExportedAction,
     GraphNodePayload,
     GraphEdgePayload,
 )
 from agent.coordination.state_machine import SessionState
 from agent.coordination.tool_router import ToolRouter
 from agent.trace_logger import TraceLogger
+from agent import exporter
 from agent.tool_summaries import summarize_tool_result, summarize_tool_error
 from agent.fast_path.templates import generate_filler
 from agent.fast_path.intent_classifier import IntentClassifier, embeddings_enabled
@@ -83,6 +86,7 @@ MAX_FRAME_AGE_S = 15.0      # a frame older than this means sharing stopped: don
 # Resource bounds (gap #8): sessions are in-memory only and were never evicted, so a long-running
 # server accumulated one SessionState (plus its idempotency store and memory graph) per page load
 # forever. <= 0 disables eviction, e.g. for tests that assert on session count across time.
+EXPORT_PREVIEW_CHARS = 6000   # how much of an exported file the UI is sent to display
 _SPOKEN_TYPES = (ActionType.FILLER, ActionType.SPOKEN_RESPONSE, ActionType.CLARIFICATION)
 # Default: duck on speech onset (~0.35 s), stop at the first non-echo partial transcript (~1.2 s). Set to 1 to stop the
 # moment the VAD hears speech: fastest barge-in, but any noise or leaked echo that opens the VAD then cuts a reply short.
@@ -147,6 +151,8 @@ class AgentCoordinator:
         self.llm_backend = llm_backend or get_backend(LLMConfig())
         self.planner = Planner(llm_backend=self.llm_backend, tool_router=self.tool_router)
         self.tts_backend = tts_backend
+        # session_id -> the code/text artifacts workers produced, newest last (what export_artifact exports by default)
+        self._artifacts: Dict[str, List[Dict[str, Any]]] = {}
         self._classifier_loading: Optional[asyncio.Future] = None
         # session_id -> [t_event, ack_observed, cancel_observed]: when the last user_text/interrupt arrived, so the
         # first acknowledgement and the first cancellation it causes can be timed (agent_first_ack_seconds etc.)
@@ -203,6 +209,7 @@ class AgentCoordinator:
             self._frames.pop(sid, None)
             self._voice.pop(sid, None)
             self._reaction.pop(sid, None)
+            self._artifacts.pop(sid, None)
             speaker = self._speakers.pop(sid, None)
             if speaker is not None:
                 speaker.close()
@@ -282,6 +289,10 @@ class AgentCoordinator:
         self.trace_logger.log_action(action)
         await self.action_queue.put(action)
         metrics.ACTIONS.inc(type=action.action_type.value)
+        if action.action_type == ActionType.AGENT_STEP and getattr(action, "artifact", None):
+            store = self._artifacts.setdefault(action.session_id, [])
+            store.append(dict(action.artifact))
+            del store[:-10]                                   # a handful is plenty; bound memory per session
         react = self._reaction.get(action.session_id)
         if react is not None:
             if action.action_type == ActionType.FILLER and not react[1]:
@@ -511,6 +522,33 @@ class AgentCoordinator:
             "has_frame": True, "answer": result.answer, "model": result.model,
             "frame_id": frame.frame_id, "frame_age_s": round(clock.now() - frame.ts, 2),
         }
+
+    async def _run_export(self, session_id: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """The export_artifact tool: write code to a file and open it in the editor. Content comes from the call itself or, if
+        omitted, from the newest artifact a worker produced for this session."""
+        content = arguments.get("content")
+        filename = arguments.get("filename")
+        language = arguments.get("language")
+        if not (isinstance(content, str) and content.strip()):
+            artifacts = self._artifacts.get(session_id) or []
+            if not artifacts:
+                return {"exported": False,
+                        "error": "I don't have any code to export yet. Ask me to write something first, then say 'open it in VS Code'."}
+            latest = artifacts[-1]
+            content = latest.get("content", "")
+            filename = filename or latest.get("title")
+            language = language or latest.get("language")
+        try:
+            call = (exporter.export_file, content, filename, language, str(arguments.get("open_in") or "vscode"))
+            # A small file write: in a worker thread so it can never stall interrupt handling (inline under the virtual
+            # clock, where a thread would let virtual time race ahead).
+            result = call[0](*call[1:]) if clock.is_virtual() else await asyncio.to_thread(*call)
+        except exporter.ExportError as e:
+            return {"exported": False, "error": str(e)}
+        return {"exported": True, "filename": result.filename, "path": result.path, "bytes": result.bytes,
+                "language": result.language, "editor_uri": result.editor_uri, "download_path": result.download_path,
+                "opened_with": result.opened_with, "folder": str(Path(result.path).parent),
+                "preview": content[:EXPORT_PREVIEW_CHARS]}
 
     # ------------------------------------------------------------------ continuous voice streaming
     def _spawn_voice_task(self, runtime: _VoiceRuntime, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
@@ -974,6 +1012,15 @@ class AgentCoordinator:
             except Exception as e:
                 logger.exception("Error executing autonomous worker '%s': %s", worker.name, e)
                 error = str(e)
+        elif tool_name == "export_artifact":
+            try:
+                result = await self._run_export(session_id, arguments)
+            except asyncio.CancelledError:
+                logger.info("Export (call_id=%s) cancelled under epoch %d", call_id, epoch)
+                return
+            except Exception as e:
+                logger.exception("Export failed: %s", e)
+                error = str(e)
         elif tool_name == "analyze_frame":
             try:
                 result = await self._run_vision(session_id, arguments)
@@ -1029,6 +1076,13 @@ class AgentCoordinator:
                 session.epoch,
             )
             return
+
+        if event.tool_name == "export_artifact" and not event.error and isinstance(event.result, dict) and event.result.get("exported"):
+            r = event.result
+            await self.emit_action(FileExportedAction(
+                session_id=session.session_id, epoch=session.epoch, call_id=event.call_id, filename=r["filename"], path=r["path"],
+                bytes=r["bytes"], language=r.get("language") or "", editor_uri=r.get("editor_uri") or "",
+                download_path=r.get("download_path") or "", opened_with=r.get("opened_with"), preview=r.get("preview") or ""))
 
         if event.tool_name == "analyze_frame" and not event.error and origin_text and isinstance(event.result, dict):
             await self.emit_action(session.get_snapshot())

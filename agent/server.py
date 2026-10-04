@@ -57,7 +57,8 @@ MAX_BINARY_FRAME_BYTES = 10 * 1024 * 1024
 # Phase G: abuse protection state (see agent/security.py and agent/settings.py)
 _limiter: Optional[security.ConnectionLimiter] = None
 _last_warmup: float = 0.0
-PROTECTED_HTTP = ("/warmup", "/metrics")
+PROTECTED_HTTP = ("/warmup", "/metrics", "/auth/check")
+PROTECTED_PREFIXES = ("/exports/",)
 VIOLATIONS_BEFORE_DISCONNECT = 50
 
 
@@ -108,7 +109,7 @@ async def lifespan(app: FastAPI):
     await coordinator.stop()
 
 
-app = FastAPI(title="Interruptible Real-Time Agent", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Kairos · Καιρός", version="1.0.0", lifespan=lifespan)
 
 
 _cfg0 = get_settings()
@@ -128,7 +129,7 @@ async def protect_and_tag(request: Request, call_next):
     token = request_id_var.set(rid)
     try:
         path = request.url.path
-        if path in PROTECTED_HTTP and not security.token_ok(
+        if (path in PROTECTED_HTTP or path.startswith(PROTECTED_PREFIXES)) and not security.token_ok(
                 security.bearer_token(request.headers, request.query_params), cfg):
             metrics.REJECTED.inc(reason="auth")
             response = JSONResponse({"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"})
@@ -168,10 +169,31 @@ async def metrics_endpoint():
     return PlainTextResponse(metrics.REGISTRY.render(), media_type="text/plain; version=0.0.4")
 
 
+@app.get("/auth/check")
+async def auth_check():
+    """200 when the bearer token is valid (the middleware answers 401 otherwise). The login screen uses it to verify a key
+    before storing it, so a typo is caught at the login form instead of as a refused WebSocket."""
+    return {"ok": True}
+
+
+@app.get("/exports/{name}")
+async def download_export(name: str):
+    """Download a file the agent exported (so a remote user, whose editor is not on the server, can still get it)."""
+    from fastapi.responses import FileResponse
+
+    from agent import exporter
+
+    path = exporter.resolve_export(name)
+    if path is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream",
+                        headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
+
+
 @app.get("/health")
 async def health(request: Request):
     cfg = get_settings()
-    body = {"status": "ok"}
+    body = {"status": "ok", "auth_required": bool(cfg.auth_token)}
     if cfg.auth_token and not security.token_ok(security.bearer_token(request.headers, request.query_params), cfg):
         return body     # unauthenticated callers (load balancers) only learn that the process is up
     body.update({
@@ -395,13 +417,13 @@ DEMO_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interruptible Real-Time Agent Demo</title>
+    <title>Kairos · Καιρός — real-time agent</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 h-screen flex flex-col font-sans">
     <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex items-center justify-between">
         <div>
-            <h1 class="text-xl font-bold text-sky-400">Interruptible Real-Time Agent</h1>
+            <h1 class="text-xl font-bold text-sky-400">Kairos · Καιρός</h1>
             <p class="text-xs text-slate-400">Full-Duplex Interruption &amp; Re-Planning Engine · Samsung Hackathon Theme 05</p>
         </div>
         <div class="flex items-center gap-4">

@@ -21,6 +21,7 @@ import com.samsung.interruptible.state.Role
 import com.samsung.interruptible.ui.AgentApp
 import com.samsung.interruptible.ui.AgentTheme
 import com.samsung.interruptible.ui.ChatScreen
+import com.samsung.interruptible.ui.LoginScreen
 import com.samsung.interruptible.ui.SettingsForm
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
@@ -89,10 +90,54 @@ class UiTest {
         shot("chat_conversation")
     }
 
-    @Test fun anEmptyChatTellsYouWhatToTry() {
-        chat(ChatState())
-        rule.onNodeWithText("Say or type something").assertIsDisplayed()
+    @Test fun anEmptyChatShowsTheBrandAndOneTapSuggestions() {
+        val picked = mutableListOf<String>()
+        rule.setContent { AgentTheme { ChatScreen(ChatState(), { true }, {}, {}, {}, {}, { _, _, _ -> true }, {}, onSuggestion = { picked += it }) } }
+        rule.onNodeWithText("KAIROS").assertIsDisplayed()
+        rule.onNodeWithText("ΚΑΙΡΟΣ").assertIsDisplayed()
         rule.onNodeWithText("Waiting for the server…").assertIsDisplayed()
+        rule.onNodeWithText("Open in VS Code").performClick()
+        assertTrue(picked.single().contains("reverse.py") && picked.single().contains("VS Code"))
+        shot("chat_empty")
+    }
+
+    @Test fun anExportedFileAppearsWithItsActions() {
+        chat(conversation.copy(exports = listOf(com.samsung.interruptible.state.ExportItem(9, "reverse.py", "/home/me/kairos-exports/reverse.py", 52, "/exports/reverse.py", "code"))))
+        rule.onNodeWithText("reverse.py").assertIsDisplayed()
+        rule.onNodeWithText("/home/me/kairos-exports/reverse.py").assertIsDisplayed()
+        rule.onNodeWithText("Copy path").assertIsDisplayed()
+        rule.onNodeWithText("Download").assertIsDisplayed()
+        shot("chat_export")
+    }
+
+    // ------------------------------------------------------------------------------------- sign in
+    private fun login(notice: String = "", onSignIn: suspend (String, String) -> String? = { _, _ -> null }) {
+        rule.setContent { AgentTheme { LoginScreen("ws://10.0.2.2:8000", notice, onSignIn) } }
+    }
+
+    @Test fun loginShowsTheBrandAndDisablesContinueUntilThereIsAKey() {
+        login()
+        rule.onNodeWithText("KAIROS").assertIsDisplayed()
+        rule.onNodeWithText("Welcome back").assertIsDisplayed()
+        rule.onNodeWithText("Continue").assertIsNotEnabled()
+        shot("login")
+    }
+
+    @Test fun loginSubmitsServerAndKeyAndShowsTheServersObjection() {
+        val calls = mutableListOf<Pair<String, String>>()
+        login(onSignIn = { server, key -> calls += server to key; "That key was not accepted." })
+        rule.onNodeWithText("Access key").performTextInput("wrong")
+        rule.onNodeWithText("Continue").assertIsEnabled().performClick()
+        rule.waitForIdle()
+        assertEquals(listOf("ws://10.0.2.2:8000" to "wrong"), calls)
+        rule.onNodeWithText("That key was not accepted.").assertIsDisplayed()
+        shot("login_error")
+    }
+
+    @Test fun loginExplainsWhyItIsAskingAndWarnsAboutPlaintextRemotes() {
+        rule.setContent { AgentTheme { LoginScreen("ws://192.168.1.5:8000", "Your saved key is no longer valid. Please sign in again.") { _, _ -> null } } }
+        rule.onNodeWithText("Your saved key is no longer valid. Please sign in again.").assertIsDisplayed()
+        rule.onNodeWithText("This address is not encrypted", substring = true).assertIsDisplayed()
     }
 
     @Test fun sendIsDisabledUntilThereIsTextThenSendsAndClears() {

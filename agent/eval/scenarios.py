@@ -184,6 +184,33 @@ SUITE: List[Scenario] = [
                   tool("search_flights", origin="Mumbai", destination="Goa")],
         max_s=40,
     ),
+    # ----------------------------------------------------------------------- code, export, timers
+    Scenario(
+        name="export_code", tags=("task", "export"),
+        description="The model writes code and saves/opens it in the editor in one call; the file must really exist once.",
+        steps=[Step(0, text="Write a Python function that reverses a string, save it as reverse.py and open it in VS Code")],
+        expected_calls=[ExpectedCall("export_artifact", {"filename": "reverse.py"})],
+        latency_s={},
+        mock_llm=[tool("export_artifact", filename="reverse.py", language="python", open_in="vscode",
+                       content="def reverse(s: str) -> str:\n    return s[::-1]\n")],
+        max_s=40,
+    ),
+    Scenario(
+        name="export_without_code", tags=("task", "export", "safety"),
+        description="Asked to export before any code exists: say so plainly instead of writing an empty file.",
+        steps=[Step(0, text="Open it in VS Code")],
+        expected_calls=[ExpectedCall("export_artifact")],
+        mock_llm=[tool("export_artifact", open_in="vscode")],
+        max_s=40,
+    ),
+    Scenario(
+        name="timer_cancelled", tags=("interrupt", "task"),
+        description="A running timer is cancelled by 'stop': it must not finish and announce itself afterwards.",
+        steps=[Step(0, text="Set a 20 second timer for my tea"), Step(1.0, text="Stop, cancel the timer", interrupts=True)],
+        forbid_completed=["set_timer"], latency_s={"set_timer": 20.0},
+        mock_llm=[tool("set_timer", seconds=20, label="tea"), say("Okay, I cancelled the timer.")],
+        max_s=40,
+    ),
     # -------------------------------------------------------------------------- spoken output
     Scenario(
         name="speak_barge_in", tags=("interrupt", "speech"), speak=True,

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
+import os
 import json
 import subprocess
 from agent import clock
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from agent.coordinator import AgentCoordinator
-from agent.eval.environment import Environment, ExecRecord, instrument_vision
+from agent.eval.environment import Environment, ExecRecord, instrument_export, instrument_vision
 from agent.eval.scenario import Scenario, Step
 from agent.llm_client import LLMBackend, LLMConfig, LLMResponse, MockLLMBackend, get_backend
 from agent.multimodal.asr import ASRProcessor
@@ -21,6 +23,11 @@ from agent.multimodal.tts import MockTTSBackend
 from agent.multimodal.vision import MockVisionBackend, OpenRouterVisionBackend, VisionBackend
 from agent.schemas.events import AudioChunkEvent, InterruptSignalEvent, UserTextEvent, VideoFrameEvent
 from agent.trace_logger import TraceLogger
+
+# Exports are real files: keep the eval's out of the user's home and never launch an editor from a test run.
+os.environ.setdefault("EXPORT_OPEN", "0")
+if not os.environ.get("EXPORT_DIR"):
+    os.environ["EXPORT_DIR"] = tempfile.mkdtemp(prefix="kairos-eval-exports-")
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "audio"
 
@@ -189,6 +196,7 @@ async def run_scenario(
     if scenario.speak:
         coordinator.set_tts(sid, True)
     instrument_vision(env, coordinator)
+    instrument_export(env, coordinator)
 
     if pacer is not None:
         # scripted length ~= number of planner calls (an observation tool adds a continuation call)

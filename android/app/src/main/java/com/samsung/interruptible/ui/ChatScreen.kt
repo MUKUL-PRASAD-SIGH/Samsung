@@ -78,6 +78,9 @@ fun ChatScreen(
     onToggleCamera: () -> Unit,
     onFrame: (ByteArray, Int, Int) -> Boolean,
     onDismissError: () -> Unit,
+    onSuggestion: (String) -> Unit = {},
+    serverUrl: String = "",
+    token: String = "",
 ) {
     var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -98,10 +101,11 @@ fun ChatScreen(
             contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (state.messages.isEmpty() && state.agents.isEmpty()) item { EmptyHint(state.connection.toString().contains("Connected")) }
+            if (state.messages.isEmpty() && state.agents.isEmpty()) item { EmptyHint(state.connection.toString().contains("Connected"), onSuggestion) }
             items(state.messages, key = { it.id }) { MessageBubble(it) }
             items(state.agents, key = { it.callId }) { AgentCardView(it) }
             if (state.artifact != null || state.artifactLoading) item { ArtifactCard(state) }
+            items(state.exports, key = { "export-${it.id}" }) { ExportCard(it, serverUrl, token) }
         }
 
         if (state.handsFree) ListeningBar(state)
@@ -137,14 +141,55 @@ private fun IconToggle(on: Boolean, onIcon: androidx.compose.ui.graphics.vector.
 }
 
 @Composable
-private fun EmptyHint(connected: Boolean) {
-    Column(Modifier.fillMaxWidth().padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Say or type something", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+private fun EmptyHint(connected: Boolean, onSuggestion: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Wordmark()
         Text(
-            "Try “Find flights from Delhi to Mumbai”, then interrupt: “No wait, make it Goa”.",
-            color = Palette.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp, start = 24.dp, end = 24.dp),
+            "The right moment to act. Talk over me, correct me mid-task — I adapt.",
+            color = Palette.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, start = 24.dp, end = 24.dp),
         )
         if (!connected) Text("Waiting for the server…", color = Palette.Amber, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
+        Column(Modifier.padding(top = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            SUGGESTIONS.forEach { (label, text) ->
+                androidx.compose.material3.AssistChip(
+                    onClick = { onSuggestion(text) }, label = { Text(label) },
+                    colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(labelColor = Color.White, containerColor = Palette.SurfaceHigh),
+                )
+            }
+        }
+    }
+}
+
+/** Complete requests, so one tap is a working demo. */
+internal val SUGGESTIONS = listOf(
+    "Find flights" to "Find flights from Delhi to Mumbai",
+    "Weather" to "What's the weather like in Paris?",
+    "Write code" to "Write a TypeScript debounce function with a short usage example",
+    "Open in VS Code" to "Write a Python function that reverses a string, save it as reverse.py and open it in VS Code",
+    "Set a timer" to "Set a 20 second timer for my tea",
+)
+
+/** A file the agent exported. A phone has no VS Code, so the useful actions are: copy the path, or download it via the browser. */
+@Composable
+private fun ExportCard(item: com.samsung.interruptible.state.ExportItem, serverUrl: String, token: String) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    Card(colors = CardDefaults.cardColors(containerColor = Palette.Surface), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(item.filename, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text("%.1f KB".format(item.bytes / 1000.0), color = Palette.Muted, fontSize = 11.sp)
+            }
+            Text(item.path, color = Palette.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 2)
+            Row {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(item.path)) }) { Text("Copy path") }
+                TextButton(onClick = {
+                    val url = com.samsung.interruptible.data.Urls.httpBase(serverUrl) + item.downloadPath +
+                        if (token.isNotBlank()) "?token=" + java.net.URLEncoder.encode(token, "UTF-8") else ""
+                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                }) { Text("Download") }
+            }
+        }
     }
 }
 

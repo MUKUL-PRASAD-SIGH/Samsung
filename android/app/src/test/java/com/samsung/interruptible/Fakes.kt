@@ -1,6 +1,8 @@
 package com.samsung.interruptible
 
 import com.samsung.interruptible.audio.MicInput
+import com.samsung.interruptible.data.AuthApi
+import com.samsung.interruptible.data.AuthProbe
 import com.samsung.interruptible.audio.SpeechOutput
 import com.samsung.interruptible.data.ConnState
 import com.samsung.interruptible.data.ServerMessage
@@ -52,3 +54,12 @@ class FakeStore(var settings: Settings = Settings(serverUrl = "ws://10.0.2.2:800
     override fun save(settings: Settings) { this.settings = settings }
 }
 
+
+/** Scripted server answers for the sign-in check. `probe` records what it was asked. */
+class FakeAuthApi(var answer: (server: String, token: String) -> AuthProbe) : AuthApi {
+    val asked = mutableListOf<Pair<String, String>>()
+    override suspend fun probe(serverUrl: String, token: String): AuthProbe {
+        asked += serverUrl to token
+        return answer(serverUrl, token)
+    }
+}

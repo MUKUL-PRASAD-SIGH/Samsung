@@ -98,6 +98,13 @@ sealed interface AgentAction {
         val spokenText: String?, val spokenMs: Double?,
     ) : AgentAction
 
+    /** The agent wrote a file for the user (export_artifact). */
+    data class FileExported(
+        override val epoch: Int, override val timestamp: Double,
+        val filename: String, val path: String, val bytes: Int, val language: String,
+        val editorUri: String, val downloadPath: String, val openedWith: String?, val preview: String,
+    ) : AgentAction
+
     data class Unknown(override val epoch: Int, override val timestamp: Double, val actionType: String) : AgentAction
 }
 
@@ -162,6 +169,10 @@ object Protocol {
             "speech_state" -> AgentAction.SpeechState(
                 epoch, ts, o.str("state").orEmpty(), o.str("utterance_id").orEmpty(), o.str("reason"),
                 o.str("text").orEmpty(), o.str("spoken_text"), o.dbl("spoken_ms"),
+            )
+            "file_exported" -> AgentAction.FileExported(
+                epoch, ts, o.str("filename").orEmpty(), o.str("path").orEmpty(), o.int("bytes"), o.str("language").orEmpty(),
+                o.str("editor_uri").orEmpty(), o.str("download_path").orEmpty(), o.str("opened_with"), o.str("preview").orEmpty(),
             )
             else -> AgentAction.Unknown(epoch, ts, type)
         }

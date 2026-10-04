@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fde68a"/><stop offset="1" stop-color="#d4a017"/></linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#0b0e14"/>
+  <!-- Greek key (meander) border -->
+  <path d="M16 20h96M16 108h96" stroke="url(#gold)" stroke-width="3" stroke-linecap="round" stroke-dasharray="12 6 4 6"/>
+  <circle cx="64" cy="64" r="36" fill="none" stroke="url(#gold)" stroke-width="3"/>
+  <!-- Kappa: the first letter of Kairos -->
+  <path d="M50 42v44M50 64l26-22M54 62l24 24" stroke="url(#g)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="92" cy="44" r="5" fill="#f43f5e"/>
+</svg>

@@ -49,6 +49,13 @@ class UrlsTest {
         assertTrue(Urls.isInsecureRemote("192.168.1.5:8000"))
     }
 
+    @Test fun httpBaseMapsWebSocketAddressesToTheSameServersHttpAddress() {
+        assertEquals("http://10.0.2.2:8000", Urls.httpBase("ws://10.0.2.2:8000/"))
+        assertEquals("https://agent.example.com", Urls.httpBase("wss://agent.example.com"))
+        assertEquals("https://agent.example.com", Urls.httpBase("https://agent.example.com/"))
+        assertEquals("http://192.168.1.5:8000", Urls.httpBase("192.168.1.5:8000"))
+    }
+
     @Test fun backoffDoublesCapsAndResets() {
         val b = Backoff(baseMs = 500, maxMs = 8_000)
         assertEquals(listOf(500L, 1000L, 2000L, 4000L, 8000L, 8000L, 8000L), (1..7).map { b.nextDelayMs() })

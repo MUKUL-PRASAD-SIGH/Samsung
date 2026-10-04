@@ -1,6 +1,8 @@
 package com.samsung.interruptible.state
 
 import com.samsung.interruptible.audio.MicInput
+import com.samsung.interruptible.data.AuthApi
+import com.samsung.interruptible.data.AuthProbe
 import com.samsung.interruptible.audio.Pcm
 import com.samsung.interruptible.audio.SpeechOutput
 import com.samsung.interruptible.data.AgentAction
@@ -27,6 +29,16 @@ import kotlinx.coroutines.launch
  *  - `speech_state: stopped` -> flush the audio queue IMMEDIATELY (the user took the floor);
  *  - a typed message or the Stop button flushes locally without waiting for the round trip.
  */
+/** Where the sign-in flow is. The app only shows the main UI in [Ready]. */
+sealed interface AuthStatus {
+    data object Checking : AuthStatus
+
+    /** The server wants a key; `notice` explains why we are asking (wrong/expired key, refused connection). */
+    data class Login(val notice: String = "") : AuthStatus
+
+    data object Ready : AuthStatus
+}
+
 class AgentController(
     private val transport: Transport,
     private val speech: SpeechOutput,
@@ -34,7 +46,11 @@ class AgentController(
     private val store: SettingsStore,
     private val scope: CoroutineScope,
     private val nowMs: () -> Long = System::currentTimeMillis,
+    private val authApi: AuthApi? = null,
 ) {
+    private val _auth = MutableStateFlow<AuthStatus>(if (authApi == null) AuthStatus.Ready else AuthStatus.Checking)
+    val auth: StateFlow<AuthStatus> = _auth.asStateFlow()
+
     private val _state = MutableStateFlow(ChatState())
     val state: StateFlow<ChatState> = _state.asStateFlow()
 
@@ -52,12 +68,66 @@ class AgentController(
             transport.state.collect { conn ->
                 _state.update { ChatReducer.connectionChanged(it, conn, nowMs()) }
                 if (conn == ConnState.Connected) onConnected()
+                if (conn is ConnState.Refused && authApi != null) {
+                    // The server turned us away (wrong or revoked key): ask again instead of looping on a dead connection.
+                    _auth.value = AuthStatus.Login("The server did not accept your key. Please sign in again.")
+                }
             }
         }
     }
 
     fun connect() {
         transport.connect(Urls.webSocketUrl(settings.serverUrl, settings.sessionId, settings.token))
+    }
+
+    /**
+     * App start / returning to the app: find out whether the server needs a key and whether ours works, then connect or ask.
+     * An unreachable server is not a reason to block the app: it opens and shows its own reconnect state.
+     */
+    fun begin() {
+        val api = authApi
+        if (api == null) {
+            _auth.value = AuthStatus.Ready
+            connect()
+            return
+        }
+        _auth.value = AuthStatus.Checking
+        scope.launch {
+            when (val probe = api.probe(settings.serverUrl, settings.token)) {
+                AuthProbe.Open, AuthProbe.Valid, is AuthProbe.Unreachable -> {
+                    _auth.value = AuthStatus.Ready
+                    connect()
+                }
+                is AuthProbe.NeedsKey ->
+                    _auth.value = AuthStatus.Login(if (probe.hadKey) "Your saved key is no longer valid. Please sign in again." else "")
+            }
+        }
+    }
+
+    /** The login form: verify the key against the server BEFORE storing it. Returns an error message, or null on success. */
+    suspend fun signIn(serverUrl: String, key: String): String? {
+        val api = authApi ?: return null
+        val candidate = settings.copy(serverUrl = serverUrl.trim(), token = key.trim())
+        return when (val probe = api.probe(candidate.serverUrl, candidate.token)) {
+            AuthProbe.Open, AuthProbe.Valid -> {
+                settings = candidate
+                store.save(settings)
+                _auth.value = AuthStatus.Ready
+                connect()
+                null
+            }
+            is AuthProbe.NeedsKey -> "That key was not accepted."
+            is AuthProbe.Unreachable -> "Cannot reach the server (${probe.reason}). Check the address and that it is running."
+        }
+    }
+
+    fun signOut() {
+        stopHandsFree()
+        speech.flush()
+        transport.disconnect()
+        settings = settings.copy(token = "")
+        store.save(settings)
+        _auth.value = AuthStatus.Login()
     }
 
     fun disconnect() {

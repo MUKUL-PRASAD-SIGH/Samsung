@@ -43,6 +43,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.samsung.interruptible.data.ConnState
 import com.samsung.interruptible.state.AgentController
+import com.samsung.interruptible.state.AuthStatus
 
 private enum class Tab(val label: String) { Chat("Chat"), State("State"), Trace("Trace"), Graph("Graph") }
 
@@ -50,6 +51,7 @@ private enum class Tab(val label: String) { Chat("Chat"), State("State"), Trace(
 @Composable
 fun AgentApp(controller: AgentController) {
     val state by controller.state.collectAsStateWithLifecycle()
+    val auth by controller.auth.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
@@ -63,6 +65,18 @@ fun AgentApp(controller: AgentController) {
     }
     fun has(permission: String) = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
+    when (val a = auth) {
+        AuthStatus.Checking -> {
+            Box(Modifier.fillMaxSize().background(Palette.Background), contentAlignment = Alignment.Center) { Wordmark() }
+            return
+        }
+        is AuthStatus.Login -> {
+            LoginScreen(controller.settings.serverUrl, a.notice) { server, key -> controller.signIn(server, key) }
+            return
+        }
+        AuthStatus.Ready -> Unit
+    }
+
     Scaffold(
         containerColor = Palette.Background,
         topBar = {
@@ -70,7 +84,7 @@ fun AgentApp(controller: AgentController) {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Palette.Background),
                 title = {
                     Column {
-                        Text("Interruptible Agent", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                        Wordmark(big = false)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(8.dp).background(connectionColor(state.connection), CircleShape))
                             Text("  ${connectionLabel(state.connection)} · epoch ${state.epoch}", fontSize = 11.sp, color = Palette.Muted)
@@ -117,6 +131,9 @@ fun AgentApp(controller: AgentController) {
                         else micPermission.launch(Manifest.permission.RECORD_AUDIO)
                     },
                     onToggleSpeak = { controller.setSpeakReplies(!state.speakReplies) },
+                    onSuggestion = { controller.sendText(it) },
+                    serverUrl = controller.settings.serverUrl,
+                    token = controller.settings.token,
                     onToggleCamera = {
                         if (state.sharing) controller.setSharing(false)
                         else if (has(Manifest.permission.CAMERA)) controller.setSharing(true)

@@ -83,6 +83,8 @@ class Planner:
                     "(such as a date or time) that the tool does not accept. "
                     "If the user refers to something visible (\"this\", \"on my screen\", \"in the picture\", \"the sign\"), "
                     "call analyze_frame with a specific question about the image, then use its answer to continue the request. "
+                    "To save, export, download or open code in an editor, call export_artifact (with no content it exports the code the last "
+                    "worker wrote; if none exists yet, spawn_agent first, or pass the code as content). For a countdown call set_timer. "
                     "You have the superpower to synthesize custom, bespoke agents on the fly! "
                     "When the user asks to build, design, audit, analyze, or execute any specialized task (e.g. database schema, SVG graphics, security audit, code, travel), "
                     "call 'spawn_agent' and create a tailored agent with a unique name (e.g. 'db_architect', 'vector_craft', 'sec_auditor', 'bob'), "

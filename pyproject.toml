@@ -16,6 +16,9 @@ dependencies = [
     "onnxruntime>=1.17",
 ]
 
+[project.scripts]
+kairos = "agent.launcher:main"
+
 [project.optional-dependencies]
 # Tier-1 semantic intent classification (§7.2); falls back to keyword heuristics if absent.
 embeddings = ["sentence-transformers>=2.5"]

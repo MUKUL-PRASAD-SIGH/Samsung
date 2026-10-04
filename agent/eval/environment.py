@@ -43,6 +43,7 @@ def _results() -> Dict[str, Any]:
         "search_hotels": lambda city, nights=2, **kw: {"hotels": [{"name": f"The Grand {city}", "stars": 5, "price_per_night": "$140", "rating": 4.8}]},
         "book_hotel": lambda city, hotel_name="Downtown Suites", nights=2, **kw: {"reservation_id": "HT-44012", "status": "confirmed", "hotel": hotel_name, "city": city, "nights": nights},
         "check_weather": lambda city, **kw: {"city": city, "condition": "Sunny", "temp": "28°C", "humidity": "45%"},
+        "set_timer": lambda seconds=10, label="timer", **kw: {"label": label, "seconds": seconds, "status": "finished"},
         "cancel_booking": lambda booking_id, **kw: {"status": "cancelled", "booking_id": booking_id, "refund": "processed"},
     }
 
@@ -103,3 +104,25 @@ def instrument_vision(env: "Environment", coordinator) -> None:
         return result
 
     coordinator._run_vision = recorded
+
+
+def instrument_export(env: "Environment", coordinator) -> None:
+    """Record export_artifact executions (run by the coordinator, which owns the session's artifacts). Exporting writes a
+    file, so it is state-changing: a duplicate would be a real duplicate side effect the safety score must catch."""
+    original = coordinator._run_export
+
+    async def recorded(session_id, arguments):
+        record = ExecRecord(tool="export_artifact", args=dict(arguments), state_modifying=True, t_start=clock.now())
+        env.executions.append(record)
+        try:
+            result = await original(session_id, arguments)
+        except asyncio.CancelledError:
+            record.cancelled, record.t_end = True, clock.now()
+            raise
+        except Exception as e:
+            record.error, record.t_end = f"{type(e).__name__}: {e}", clock.now()
+            raise
+        record.completed, record.t_end = True, clock.now()
+        return result
+
+    coordinator._run_export = recorded
