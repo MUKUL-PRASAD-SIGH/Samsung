@@ -387,3 +387,26 @@ def test_text_format_shows_context_and_setup_is_idempotent(capsys):
     setup_logging("json", "INFO")
     assert sum(1 for h in logging.getLogger().handlers if getattr(h, "_agent_handler", False)) == 1
     setup_logging("text", "INFO")
+
+
+# ------------------------------------------------------------------- malformed client payloads must not kill the socket
+def test_bad_audio_base64_and_frame_dimensions_are_rejected_not_fatal(make_client):
+    c = make_client()                      # mock coordinator: never reaches a real LLM
+    with c.websocket_connect("/ws/badpayload") as ws:
+        ws.send_text(json.dumps({"type": "audio_chunk", "audio_base64": "!!! not base64 !!!"}))
+        got = []
+        for _ in range(10):
+            m = json.loads(ws.receive_text())
+            got.append(m)
+            if m.get("type") == "error":
+                break
+        assert {"type": "error", "code": "bad_payload"} in got
+        # non-numeric dimensions on a valid frame are coerced to 0, and the connection stays usable
+        import base64
+        ws.send_text(json.dumps({"type": "video_frame", "data": base64.b64encode(b"\xff\xd8\xff").decode(), "width": "wide", "height": [1]}))
+        ws.send_text(json.dumps({"type": "user_text", "text": "hello"}))
+        assert ws.receive_text()
+
+
+def test_dimension_coercion():
+    assert [server._int_or_zero(v) for v in (None, "", "12", 7.9, "x", [1], {}, float("inf"))] == [0, 0, 12, 7, 0, 0, 0, 0]

@@ -202,7 +202,7 @@ See [`.env.example`](.env.example) for the full annotated list. The essentials:
 | `LLM_MODEL_NAME` | model id | `openai/gpt-oss-120b` (Groq) / `qwen/qwen-2.5-7b-instruct` (OpenRouter) |
 | `LLM_TIMEOUT_S` | hard LLM deadline | 8 (Groq) / 5 (OpenRouter) / 2 (local) |
 | `WHISPER_MODEL` / `_DEVICE` / `_COMPUTE_TYPE` | ASR | `base.en` / `cpu` / `int8` |
-| `VOICE_ENDPOINT_MS` | silence that ends an utterance | 700 |
+| `VOICE_ENDPOINT_MS` | silence that ends an utterance | 500 |
 | `TRACE_LOG_PATH` | JSON-lines file the server appends trace records to | unset (in-memory only) |
 
 ## Optional extras

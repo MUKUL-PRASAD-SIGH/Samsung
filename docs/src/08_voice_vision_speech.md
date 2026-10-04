@@ -464,7 +464,7 @@ The eval harness and CI gate run in mock mode with the virtual clock; voice scen
 
 ## 10. Operational notes and honest caveats
 
-- Defaults in `.env.example` differ from the code defaults. The example file shows `VOICE_ENDPOINT_MS=700` and `VOICE_PARTIAL_INTERVAL_MS=800` as commented examples, while `VoiceConfig` defaults to 500 ms and 500 ms. Also the module docstring of `streaming.py` mentions a partial every ~0.8 s. The code values (500 and 500) are what runs when the variables are unset.
+- The defaults shown in `.env.example` and the `streaming.py` docstring match the code: endpoint 500 ms, partial interval 500 ms.
 - Typical latency numbers in comments (duck at about 0.35 s, stop at the first non-echo partial at about 1.2 s, per the comment in `agent/coordinator.py`) are author estimates, not guarantees; real values depend on CPU, Whisper model and the cadence settings. The measured, tested guarantee is the 150 ms bound between an epoch change and the `stopped` emission, checked in `tests/test_speech_eval.py` and `tests/test_speech.py`.
 - Barge-in during speech needs two consecutive substantial partials (or one interrupt word) before the agent stops; the volume is ducked meanwhile. This trade-off is intentional (comment in `_voice_partial`) and trades a slightly longer talk-over for far fewer self-interruptions.
 - The web UI also keeps a legacy push-to-talk transport (binary WebM) for compatibility; the hands-free streaming path is the primary one.

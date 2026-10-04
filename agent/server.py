@@ -206,6 +206,14 @@ async def health(request: Request):
     return body
 
 
+def _int_or_zero(value) -> int:
+    """Client-supplied dimensions are untrusted: anything that is not a number becomes 0 instead of killing the socket."""
+    try:
+        return int(value or 0)
+    except (ValueError, TypeError, OverflowError):
+        return 0
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     cfg = get_settings()
@@ -370,13 +378,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                                     frame_data=frame,
                                     mime=data.get("mime", "image/jpeg"),
                                     source=data.get("source", "camera"),
-                                    width=int(data.get("width", 0) or 0),
-                                    height=int(data.get("height", 0) or 0),
+                                    width=_int_or_zero(data.get("width")),
+                                    height=_int_or_zero(data.get("height")),
                                 )
                             )
                 elif event_type == "audio_chunk":
                     b64_audio = data.get("audio_base64", "")
-                    raw_audio = base64.b64decode(b64_audio) if b64_audio else None
+                    try:
+                        raw_audio = base64.b64decode(b64_audio) if b64_audio else None
+                    except (ValueError, TypeError):  # binascii.Error is a ValueError: malformed base64
+                        if await reject("bad_payload"):
+                            await websocket.close(code=1007)
+                            break
+                        continue
                     await coordinator.post_event(
                         AudioChunkEvent(
                             session_id=session_id,

@@ -2,7 +2,7 @@
 
 Push-to-talk sends one recording when the user releases a button, so the agent can only react after
 the whole sentence is over. Streaming lets the server hear the user *while they speak*: it detects
-speech onset, emits a partial-transcript request every ~0.8s (so a correction like "wait, actually…"
+speech onset, emits a partial-transcript request every ~0.5s (so a correction like "wait, actually…"
 can cancel stale work about a second in), and ends the utterance automatically after a pause.
 
 This module is deliberately model-light and clock-free: time is measured in audio frames, so the

@@ -243,3 +243,10 @@ async def test_dynamic_agent_svg_creation():
     assert "<svg" in art["content"]
     assert "RPM" in art["content"]
 
+
+
+def test_offline_tsx_template_has_valid_react_import():
+    from agent.workers.dynamic_agent import DynamicAgentWorker
+
+    code = DynamicAgentWorker(name="bob", goal="a clock")._synthesize_fallback_content("Clock.tsx", "typescript")
+    assert 'import React, { useState, useEffect } from "react";' in code and '{"useState"' not in code

@@ -133,7 +133,7 @@ A page at `https://evil.example` opens `wss://agent.example.com/ws/demo_1`. The 
 - Slow clients lose actions (logged) but never stall other sessions or the coordinator.
 - A malformed trace record in live mode is dropped, counted and visible in `/health` and `/metrics`.
 - Exceptions in the forwarder end only that connection's forwarder.
-- Unhandled-input gaps worth knowing (from reading the code): the legacy `audio_chunk` branch calls `base64.b64decode` without a try/except, and the `video_frame` branch calls `int(data.get("width", 0))` unguarded. Malformed values there raise inside the receive loop; only `WebSocketDisconnect` is caught, so such a message would end that connection with a server error rather than a polite `error` reply. These paths are not covered by the hardening tests.
+- Malformed client payloads: a bad base64 `audio_chunk` is answered with `{"type":"error","code":"bad_payload"}` (counted as a violation like any other rejected message), and non-numeric `width`/`height` on a `video_frame` are coerced to 0 by `_int_or_zero`. Neither ends the connection. Covered by `tests/test_hardening.py`.
 - Rate-limit tokens are consumed before the oversized-binary check, so an oversized frame also costs budget.
 - `server.py` has a duplicated `import os` and the inline fallback page loads Tailwind from a CDN (it needs internet; the built React UI does not).
 
@@ -458,7 +458,7 @@ Defaults are those in the code. "Module" is the file that reads the variable. Va
 
 ### Inconsistencies noticed while building this table
 
-- `.env.example` documents `VOICE_ENDPOINT_MS=700` and `VOICE_PARTIAL_INTERVAL_MS=800`, but the dataclass defaults in `agent/multimodal/streaming.py` are 500 and 500. The code values are the ones in effect unless the variable is set.
+- `.env.example` now documents the real voice defaults (`VOICE_ENDPOINT_MS=500`, `VOICE_PARTIAL_INTERVAL_MS=500`), matching `VoiceConfig` in `agent/multimodal/streaming.py`.
 - `.env.example` has `LLM_MODEL_NAME=qwen/qwen-2.5-7b-instruct` uncommented. If a user copies it and also sets `GROQ_API_KEY`, this overrides the Groq default `openai/gpt-oss-120b`, which the project notes say is the only Groq model enabled for the org.
 - `.env.example` has `OPENROUTER_API_KEY=sk-or-v1-your-key-here` uncommented, so a placeholder key counts as "set" and selects the OpenRouter backend if no Groq key is present.
 - `VOICE_VAD_SILENCE_THRESHOLD`, `VOICE_PREROLL_MS`, `VOICE_MIN_PARTIAL_MS`, `SESSION_TTL_S`, `SESSION_EVICT_INTERVAL_S`, `TRACE_LOG_PATH`, `TRACE_STRICT`, `WARMUP_LLM`, `INTENT_THREADS` and the `EXPORT_*` variables are read by code but are not described in `.env.example` (`test_every_setting_is_documented_in_env_example` only covers the `Settings` fields).

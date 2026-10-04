@@ -105,7 +105,12 @@ def render(d, text, first_heading_level=1):
         elif re.match(r"\s*[-*] ", ln):
             runs(d.add_paragraph(style="List Bullet"), re.sub(r"^\s*[-*] ", "", ln))
         elif re.match(r"\s*\d+\. ", ln):
-            runs(d.add_paragraph(style="List Number"), re.sub(r"^\s*\d+\. ", "", ln))
+            # Numbers are written out: Word's "List Number" style keeps counting across separate lists.
+            num, rest = re.match(r"\s*(\d+)\. (.*)", ln).groups()
+            par = d.add_paragraph()
+            par.paragraph_format.left_indent = Cm(0.9)
+            par.paragraph_format.first_line_indent = Cm(-0.6)
+            runs(par, f"{num}.  {rest}")
         elif ln.strip():
             runs(d.add_paragraph(), ln.strip())
         i += 1
