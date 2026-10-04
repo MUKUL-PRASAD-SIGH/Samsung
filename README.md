@@ -6,18 +6,58 @@
 interruptible real-time agent (Samsung Hackathon, Theme 05): talk over it, correct it mid-task, and it adapts instead of finishing the
 wrong thing.
 
-## Start it in one step
+## For judges: setup in 3 steps
+
+Needs Python 3.10-3.12 (3.13+ is not supported by the speech dependencies) and, to build the web UI, Node.js 18+. No API key is required.
 
 ```bash
-pip install -e ".[tts,embeddings]"          # once (plus: cd frontend && npm ci && npm run build)
-kairos                                      # starts the server and opens Kairos in its own window
-kairos --install-shortcut                   # (Linux) adds a Kairos icon to your application launcher: click it, you're in
+./setup.sh            # Windows: setup.bat. Creates .venv, installs everything, builds the UI, downloads models, runs a self-check
+.venv/bin/kairos      # Windows: .venv\Scripts\kairos. Starts the server and opens Kairos in its own window
+```
+
+Then, to use a real model, put `GROQ_API_KEY=...` (or `OPENROUTER_API_KEY=...`) in `.env` and restart.
+
+* **No key?** Kairos runs in an offline mock mode (canned replies, the real coordination logic), enough to see interruptions,
+  epochs and cancellation work.
+* **Options:** `./setup.sh --quick` skips model downloads (fetched on first use), `--no-frontend` skips the UI build,
+  `--check` only reports what is installed.
+* **No Python or Node?** `docker compose up --build`, then open http://localhost:8000 (see [Deployment](#deployment)).
+* **Verify:** `.venv/bin/python -m agent.eval --llm mock --virtual --set all --fail-under 97 --min-scenario 95` should end with
+  `GATE PASSED`; `.venv/bin/python -m pytest -q` runs the unit tests.
+* **Trouble?** The microphone only works on `localhost` or HTTPS; port 8000 busy: `kairos --port 8001`; the troubleshooting table is in
+  `docs/01_setup_and_quickstart.docx`.
+
+## Documentation
+
+Detailed documentation of every component is in [`docs/`](docs/) as `.docx` files (Markdown sources in `docs/src/`, rebuilt with
+`python docs/build_docs.py`, which needs `pip install python-docx`). Start with `00_judges_guide.docx`; `Kairos_Complete_Documentation.docx`
+combines all chapters.
+
+| File | Covers |
+|---|---|
+| `00_judges_guide` | what Kairos is, what to try, document map |
+| `01_setup_and_quickstart` | install paths, LLM choice, verification, troubleshooting |
+| `02_coordination_core` | epoch model, session state, idempotency, tool router, virtual clock |
+| `03_coordinator_event_flow` | coordinator, event/action queues, interrupts, trace |
+| `04_fast_and_slow_path` | Tier 1 interrupt classifier, Tier 2 fillers, Tier 3 planner |
+| `05_llm_layer` | backends, circuit breaker, deadlines, fallback, mock mode |
+| `06_memory` | scratchpad, graph memory, context builder |
+| `07_tools_and_workers` | every tool and worker |
+| `08_voice_vision_speech` | VAD, Whisper, Piper, barge-in, echo guard, vision |
+| `09_server_security_deployment` | HTTP/WebSocket protocol, limits, Docker, CI, env-var reference |
+| `10_evaluation_and_testing` | eval harness, scoring, CI gate, pytest suite |
+| `11_web_frontend`, `12_android_app`, `13_demo_tooling` | the clients and the demo-video tooling |
+
+### Other ways to start
+
+```bash
 kairos --login                              # require an access key, to see the sign-in screen
+kairos --install-shortcut                   # (Linux) adds a Kairos icon to your application launcher
+python scripts/setup.py --check             # what is installed / missing
 ```
 
 `kairos` is loopback-only with no key by default (your machine), generates and requires an access key as soon as you serve a network
 (`--host 0.0.0.0`), reuses an instance that is already running, and tells you what is missing (LLM key, UI build) instead of failing.
-Docker and the Android app are below.
 
 What it can do: travel search and booking, weather, **write code and export it into VS Code**, timers (cancellable), look at your
 camera, hands-free voice you can talk over, spoken replies, and a live view of its own state, trace and memory graph.
