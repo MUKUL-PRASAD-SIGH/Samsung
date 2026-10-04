@@ -87,6 +87,11 @@ python -m agent.eval --llm mock --tag interrupt      # subset by tag: task|inter
 
 Results are written to `eval_results/`.
 
+## Android app
+
+A native Kotlin/Compose client (`android/`) with chat, hands-free voice and barge-in, spoken replies, camera sharing and the state/trace/graph views.
+See [android/README.md](android/README.md) for building (Android Studio or Docker), the protocol contract shared with the server, and its 98 tests.
+
 ## Deployment
 
 ```bash

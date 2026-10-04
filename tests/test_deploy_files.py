@@ -35,7 +35,7 @@ def test_ci_python_matrix_matches_requires_python():
 
 def test_workflows_are_valid_and_gate_what_they_claim():
     ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
-    assert {"lint", "secrets", "test", "frontend", "docker"} <= set(ci["jobs"])
+    assert {"lint", "secrets", "test", "frontend", "android", "docker"} <= set(ci["jobs"])
     steps = " ".join(str(s.get("run", "")) for s in ci["jobs"]["test"]["steps"])
     assert "pytest" in steps and "--fail-under" in steps and "--virtual" in steps and "--set all" in steps
     nightly = yaml.safe_load((ROOT / ".github/workflows/nightly-live-eval.yml").read_text())

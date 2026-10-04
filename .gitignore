@@ -22,3 +22,10 @@ frontend/dist/
 .vite/
 .serena/
 models/
+
+# Android build output
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.idea/
+*.apk

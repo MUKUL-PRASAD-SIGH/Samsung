@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext (ws://) is allowed so the app can talk to a backend on your laptop or LAN during development
+     (the emulator reaches the host at 10.0.2.2). The Settings screen warns whenever the address is not loopback/emulator
+     and not wss://, because the access token would then travel unencrypted. Use wss:// (the Caddy https profile) for
+     anything beyond your own network. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

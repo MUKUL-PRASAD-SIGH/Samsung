@@ -1,0 +1,9 @@
+[
+  {"name": "user_text", "frame": {"type": "user_text", "text": "Find flights from Delhi to Mumbai"}},
+  {"name": "interrupt", "frame": {"type": "interrupt", "reason": "ui_barge_in"}},
+  {"name": "tts_on", "frame": {"type": "tts", "enabled": true}},
+  {"name": "tts_off", "frame": {"type": "tts", "enabled": false}},
+  {"name": "voice_start", "frame": {"type": "voice_stream", "action": "start"}},
+  {"name": "voice_stop", "frame": {"type": "voice_stream", "action": "stop"}},
+  {"name": "video_frame", "frame": {"type": "video_frame", "mime": "image/jpeg", "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBD", "source": "camera", "width": 640, "height": 480}}
+]

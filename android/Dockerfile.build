@@ -1,0 +1,17 @@
+# Build the Android app without installing Android Studio:
+#   docker build -f android/Dockerfile.build -t iagent-android-build android/
+#   docker run --rm -v "$PWD/android:/workspace" -v iagent-gradle:/root/.gradle iagent-android-build ./gradlew testDebugUnitTest assembleDebug
+# The APK lands in android/app/build/outputs/apk/debug/. Building accepts the Android SDK licenses (sdkmanager --licenses),
+# the same agreement Android Studio asks you to accept.
+FROM eclipse-temurin:17-jdk-jammy
+ENV ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk
+ENV PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p $ANDROID_HOME/cmdline-tools && cd /tmp \
+ && curl -fsSLo tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+ && unzip -q tools.zip -d $ANDROID_HOME/cmdline-tools && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest \
+ && rm tools.zip
+RUN yes | sdkmanager --licenses >/dev/null \
+ && sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+WORKDIR /workspace
