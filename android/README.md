@@ -33,6 +33,23 @@ address `ws://10.0.2.2:8000` already reaches your computer. On a **phone** open 
 (or `wss://your.domain` with the Caddy profile). If the server sets `AUTH_TOKEN`, paste it into Settings; a refused connection is
 shown in the app bar and is not retried until you change the settings.
 
+## Install the APK and pair it with a Kairos computer
+
+Download `Kairos-Android-<version>.apk` from the repository's Releases page and open it on the phone (allow installs from your browser
+or file manager when Android asks). The app is a remote: the agent runs on a computer, so start Kairos there first (the Windows app, or
+`kairos --host 0.0.0.0`, which prints an access key). Then:
+
+1. **First run:** enter the computer's address (`ws://<its-LAN-ip>:8000`) and the access key if one is shown. The server is probed before
+   anything is saved.
+2. **API keys:** when the server holds no Groq/OpenRouter key, a form opens. Enter either key (or both). The app sends it with
+   `PUT /settings/keys`; the server validates it with the provider, stores it on the computer and switches to it immediately. Only a
+   masked hint (`gsk_…cdef`) ever comes back. The same form is under Settings → API keys. Keys are refused over unencrypted `ws://` to a
+   public address; on a home network the form shows a warning instead.
+
+The release APK is built by `.github/workflows/build-android.yml`. Without signing secrets it is signed with the CI runner's throwaway
+debug key: it installs fine, but to install a newer build over an older one you must uninstall first. To get updatable builds, add the
+repository secrets `ANDROID_KEYSTORE_B64` (base64 of a keystore) and `ANDROID_KEYSTORE_PASSWORD` (key alias `kairos`).
+
 ## How it works
 
 ```
@@ -53,7 +70,7 @@ Full duplex on the device:
   Stop flushes locally without waiting for the round trip. A cut-off reply is annotated in the chat: *You heard: “…” then interrupted*.
 - After a reconnect the app re-announces what it wants (spoken replies, hands-free) because the server keeps no per-connection preferences.
 
-## Tests (125 JVM tests, no emulator or device needed)
+## Tests (143 JVM tests, no emulator or device needed)
 
 `./gradlew testDebugUnitTest` runs:
 

@@ -54,6 +54,17 @@ fun AgentApp(controller: AgentController) {
     val auth by controller.auth.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showKeys by rememberSaveable { mutableStateOf(false) }
+    var promptedForKeys by rememberSaveable { mutableStateOf(false) }
+    val keys by controller.keys.collectAsStateWithLifecycle()
+    // Once signed in, ask the server whether it has an LLM key; if it has none, offer the key form once (the user can dismiss it).
+    androidx.compose.runtime.LaunchedEffect(auth) { if (auth == AuthStatus.Ready) controller.refreshKeys() }
+    androidx.compose.runtime.LaunchedEffect(keys) {
+        if (keys?.configured == false && !promptedForKeys) {
+            promptedForKeys = true
+            showKeys = true
+        }
+    }
     val context = LocalContext.current
 
     // Runtime permissions: ask when the user first reaches for the mic / camera, then do what they asked.
@@ -71,7 +82,7 @@ fun AgentApp(controller: AgentController) {
             return
         }
         is AuthStatus.Login -> {
-            LoginScreen(controller.settings.serverUrl, a.notice) { server, key -> controller.signIn(server, key) }
+            LoginScreen(controller.settings.serverUrl, a.notice, a.firstRun) { server, key -> controller.signIn(server, key) }
             return
         }
         AuthStatus.Ready -> Unit
@@ -157,7 +168,11 @@ fun AgentApp(controller: AgentController) {
                 controller.applySettings(it)
                 showSettings = false
             },
+            onOpenKeys = { showSettings = false; showKeys = true },
         )
+    }
+    if (showKeys) {
+        KeysDialog(keys, controller.settings.serverUrl, onSave = controller::saveKeys, onDismiss = { showKeys = false })
     }
 }
 

@@ -112,7 +112,7 @@ class UiTest {
 
     // ------------------------------------------------------------------------------------- sign in
     private fun login(notice: String = "", onSignIn: suspend (String, String) -> String? = { _, _ -> null }) {
-        rule.setContent { AgentTheme { LoginScreen("ws://10.0.2.2:8000", notice, onSignIn) } }
+        rule.setContent { AgentTheme { LoginScreen("ws://10.0.2.2:8000", notice, onSignIn = onSignIn) } }
     }
 
     @Test fun loginShowsTheBrandAndDisablesContinueUntilThereIsAKey() {

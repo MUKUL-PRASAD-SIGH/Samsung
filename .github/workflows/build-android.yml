@@ -1,0 +1,79 @@
+name: Build Android app
+
+# Builds Kairos-Android-<version>.apk and attaches it to a release. Runs on version tags (v*), and on demand from the Actions tab
+# (optionally naming an existing release/tag to attach the file to).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the APK to this existing release/tag (leave empty to only keep it as a workflow artifact)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Version
+        id: ver
+        run: |
+          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          if [[ "$TAG" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+) ]]; then V="${BASH_REMATCH[1]}"; else V="1.0.0"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # An optional stable signing key (repository secrets ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD) lets a newer APK update an
+      # older install. Without them the APK is signed with the runner's throwaway debug key: it still installs, updates need an uninstall.
+      - name: Signing key (optional)
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/kairos.jks"
+            echo "KAIROS_KEYSTORE=$RUNNER_TEMP/kairos.jks" >> "$GITHUB_ENV"
+            echo "KAIROS_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "Using the configured signing key."
+          else
+            echo "No signing key configured: using the debug key."
+          fi
+
+      - name: Tests, then the APK
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug -PkairosVersion=${{ steps.ver.outputs.version }} -PkairosVersionCode=${{ github.run_number }}
+
+      - name: Name and check the APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/Kairos-Android-${{ steps.ver.outputs.version }}.apk"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/aapt2" dump badging dist/Kairos-Android-*.apk | grep -E "^package|application-label"
+          "$BT/apksigner" verify --print-certs dist/Kairos-Android-*.apk | head -2
+          "$BT/aapt2" dump badging dist/Kairos-Android-*.apk | grep -q "versionName='${{ steps.ver.outputs.version }}'"
+          rm -f "$RUNNER_TEMP/kairos.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kairos-android
+          path: dist/Kairos-Android-*.apk
+
+      - name: Attach to the GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event.inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "Android app."
+          gh release upload "$TAG" dist/Kairos-Android-*.apk --clobber

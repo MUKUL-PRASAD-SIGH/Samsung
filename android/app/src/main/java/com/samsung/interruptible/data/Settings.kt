@@ -15,6 +15,9 @@ interface SettingsStore {
     fun load(): Settings
 
     fun save(settings: Settings)
+
+    /** False on a fresh install, before the user has told the app where its server is. */
+    fun hasSavedServer(): Boolean = true
 }
 
 class SharedPrefsSettingsStore(context: Context) : SettingsStore {
@@ -30,6 +33,8 @@ class SharedPrefsSettingsStore(context: Context) : SettingsStore {
             speakReplies = prefs.getBoolean("speak", false),
         )
     }
+
+    override fun hasSavedServer(): Boolean = prefs.contains("server")
 
     override fun save(settings: Settings) {
         prefs.edit()

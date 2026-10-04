@@ -7,6 +7,9 @@ import com.samsung.interruptible.audio.Pcm
 import com.samsung.interruptible.audio.SpeechOutput
 import com.samsung.interruptible.data.AgentAction
 import com.samsung.interruptible.data.ConnState
+import com.samsung.interruptible.data.KeysApi
+import com.samsung.interruptible.data.KeysResult
+import com.samsung.interruptible.data.KeysStatus
 import com.samsung.interruptible.data.Outgoing
 import com.samsung.interruptible.data.ServerMessage
 import com.samsung.interruptible.data.Settings
@@ -34,7 +37,7 @@ sealed interface AuthStatus {
     data object Checking : AuthStatus
 
     /** The server wants a key; `notice` explains why we are asking (wrong/expired key, refused connection). */
-    data class Login(val notice: String = "") : AuthStatus
+    data class Login(val notice: String = "", val firstRun: Boolean = false) : AuthStatus
 
     data object Ready : AuthStatus
 }
@@ -47,9 +50,14 @@ class AgentController(
     private val scope: CoroutineScope,
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val authApi: AuthApi? = null,
+    private val keysApi: KeysApi? = null,
 ) {
     private val _auth = MutableStateFlow<AuthStatus>(if (authApi == null) AuthStatus.Ready else AuthStatus.Checking)
     val auth: StateFlow<AuthStatus> = _auth.asStateFlow()
+
+    /** What the paired server knows about provider API keys (null until asked, or when the server is unreachable/too old). */
+    private val _keys = MutableStateFlow<KeysStatus?>(null)
+    val keys: StateFlow<KeysStatus?> = _keys.asStateFlow()
 
     private val _state = MutableStateFlow(ChatState())
     val state: StateFlow<ChatState> = _state.asStateFlow()
@@ -91,6 +99,11 @@ class AgentController(
             connect()
             return
         }
+        if (!store.hasSavedServer()) {
+            // A fresh install does not know where the server is (the built-in address is the emulator's): ask, don't spin on it.
+            _auth.value = AuthStatus.Login("", firstRun = true)
+            return
+        }
         _auth.value = AuthStatus.Checking
         scope.launch {
             when (val probe = api.probe(settings.serverUrl, settings.token)) {
@@ -116,8 +129,37 @@ class AgentController(
                 connect()
                 null
             }
-            is AuthProbe.NeedsKey -> "That key was not accepted."
+            is AuthProbe.NeedsKey -> if (key.isBlank()) "This server needs an access key. It is printed in the Kairos window on the computer." else "That key was not accepted."
             is AuthProbe.Unreachable -> "Cannot reach the server (${probe.reason}). Check the address and that it is running."
+        }
+    }
+
+    /** Ask the server which provider keys it holds; the UI offers the key form when it has none. */
+    suspend fun refreshKeys() {
+        val api = keysApi ?: return
+        _keys.value = api.status(settings.serverUrl, settings.token)
+    }
+
+    /**
+     * Send the user's Groq / OpenRouter keys to the server, which checks them with the provider and keeps them (the agent runs
+     * there, not on the phone). Returns an error message, or null on success. Refuses to send them in clear text to a public
+     * address; on a private network the UI warns instead, because a home LAN is where a PC running Kairos usually is.
+     */
+    suspend fun saveKeys(groqKey: String?, openrouterKey: String?): String? {
+        val api = keysApi ?: return "This build cannot manage keys."
+        if (Urls.isInsecureRemote(settings.serverUrl) && !Urls.isPrivateOrLocal(settings.serverUrl)) {
+            return "Your keys would cross the internet unencrypted. Use a wss:// or https:// server address first."
+        }
+        return when (val r = api.save(settings.serverUrl, settings.token, groqKey, openrouterKey)) {
+            is KeysResult.Saved -> {
+                _keys.value = r.status
+                r.warnings.firstOrNull()?.let { _state.update { s -> s.copy(error = it) } }
+                null
+            }
+            is KeysResult.Rejected -> r.message
+            KeysResult.Unauthorized -> "The server did not accept your access key. Sign in again from Settings."
+            KeysResult.NotSupported -> "This server is too old to accept keys from the app. Update Kairos on the computer."
+            is KeysResult.Unreachable -> "Cannot reach the server (${r.reason})."
         }
     }
 

@@ -59,3 +59,13 @@ PyInstaller cannot cross-compile, so the Windows executable is only produced in 
 ## 8. Tests
 
 `tests/test_keystore.py` (storage, masking, validation, endpoints, origin and token protection, live backend swap), `tests/test_desktop.py` (voice download, offline degradation, Windows browser and config paths) and `tests/test_deploy_files.py` (the workflow, spec and installer script stay valid).
+
+## 9. The Android APK
+
+The Android app is a remote for a Kairos server, because the agent (Python) runs on a computer, not on the phone. The release APK `Kairos-Android-<version>.apk` is built by `.github/workflows/build-android.yml`: it runs the 143 JVM tests, builds the app with the version taken from the release tag, checks the package with `aapt2` and `apksigner`, and attaches the file to the release.
+
+First run on a phone: the app asks for the address of the computer running Kairos (for example `ws://192.168.1.20:8000`) and its access key if it has one. When that server holds no LLM key, the app opens the same API-key form as the desktop UI and sends the key with `PUT /settings/keys` (`HttpKeysApi` in `android/app/src/main/java/com/samsung/interruptible/data/KeysApi.kt`, form in `ui/KeysForm.kt`). The server validates the key with the provider and keeps it on the computer. The app refuses to send keys over unencrypted `ws://` to a public address and warns on private networks.
+
+Without signing secrets the APK is signed with the CI runner's throwaway key, so a newer build cannot update an older install (uninstall first). Setting the repository secrets `ANDROID_KEYSTORE_B64` and `ANDROID_KEYSTORE_PASSWORD` gives builds a stable identity.
+
+Tests: `KeysTest.kt` (the key client against a mock server, the controller rules, the form, and the first-run flow).

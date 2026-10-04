@@ -175,7 +175,7 @@ fun GraphPanel(state: ChatState) {
 
 /** The connection form. Separate from the dialog window so it can be rendered and tested on its own. */
 @Composable
-fun SettingsForm(initial: Settings, onSave: (Settings) -> Unit, onCancel: () -> Unit) {
+fun SettingsForm(initial: Settings, onSave: (Settings) -> Unit, onCancel: () -> Unit, onOpenKeys: (() -> Unit)? = null) {
     var server by remember { mutableStateOf(initial.serverUrl) }
     var token by remember { mutableStateOf(initial.token) }
     var session by remember { mutableStateOf(initial.sessionId) }
@@ -193,6 +193,7 @@ fun SettingsForm(initial: Settings, onSave: (Settings) -> Unit, onCancel: () -> 
             Text("This address is not encrypted and not local: anyone on the network could read your token and conversation. Use wss://.",
                 color = Palette.Amber, fontSize = 12.sp)
         }
+        if (onOpenKeys != null) TextButton(onClick = onOpenKeys) { Text("API keys (Groq / OpenRouter)…") }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onCancel) { Text("Cancel") }
             TextButton(onClick = { onSave(initial.copy(serverUrl = server.trim(), token = token.trim(), sessionId = session)) }) {
@@ -203,10 +204,10 @@ fun SettingsForm(initial: Settings, onSave: (Settings) -> Unit, onCancel: () -> 
 }
 
 @Composable
-fun SettingsDialog(initial: Settings, onDismiss: () -> Unit, onSave: (Settings) -> Unit) {
+fun SettingsDialog(initial: Settings, onDismiss: () -> Unit, onSave: (Settings) -> Unit, onOpenKeys: (() -> Unit)? = null) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        text = { SettingsForm(initial, onSave, onDismiss) },
+        text = { SettingsForm(initial, onSave, onDismiss, onOpenKeys) },
         confirmButton = {},
     )
 }

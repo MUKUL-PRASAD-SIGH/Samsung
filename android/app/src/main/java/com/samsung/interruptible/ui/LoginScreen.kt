@@ -55,8 +55,9 @@ fun Wordmark(big: Boolean = true) {
  * stored. (A phone has to be told where the server is, so the address is on this screen, not buried in Settings.)
  */
 @Composable
-fun LoginScreen(initialServer: String, notice: String, onSignIn: suspend (server: String, key: String) -> String?) {
-    var server by remember { mutableStateOf(initialServer) }
+fun LoginScreen(initialServer: String, notice: String, firstRun: Boolean = false, onSignIn: suspend (server: String, key: String) -> String?) {
+    // On a first run the emulator's address is a useless default for a phone: start empty so the hint below is what the user sees.
+    var server by remember { mutableStateOf(if (firstRun) "" else initialServer) }
     var key by remember { mutableStateOf("") }
     var show by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -64,7 +65,7 @@ fun LoginScreen(initialServer: String, notice: String, onSignIn: suspend (server
     val scope = rememberCoroutineScope()
 
     fun submit() {
-        if (busy || key.isBlank()) return
+        if (busy || server.isBlank() || (!firstRun && key.isBlank())) return
         busy = true
         error = ""
         scope.launch {
@@ -84,15 +85,19 @@ fun LoginScreen(initialServer: String, notice: String, onSignIn: suspend (server
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Wordmark()
-            Text("Welcome back", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-            Text("Enter your server and access key.", color = Palette.Muted, fontSize = 13.sp)
+            Text(if (firstRun) "Connect to Kairos" else "Welcome back", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (firstRun) "Kairos runs on a computer; this app is its remote. Enter that computer's address (shown when you start Kairos there)."
+                else "Enter your server and access key.",
+                color = Palette.Muted, fontSize = 13.sp,
+            )
             OutlinedTextField(
                 server, { server = it }, label = { Text("Server") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                supportingText = { Text("From the emulator, ws://10.0.2.2:8000 is your computer") },
+                supportingText = { Text(if (firstRun) "For example ws://192.168.1.20:8000 (your computer's address on the same Wi-Fi)" else "From the emulator, ws://10.0.2.2:8000 is your computer") },
             )
             OutlinedTextField(
-                key, { key = it; error = "" }, label = { Text("Access key") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                key, { key = it; error = "" }, label = { Text(if (firstRun) "Access key (if the computer asks for one)" else "Access key") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = { submit() }),
@@ -104,10 +109,10 @@ fun LoginScreen(initialServer: String, notice: String, onSignIn: suspend (server
             }
             if (error.isNotEmpty()) Text(error, color = Palette.Rose, fontSize = 13.sp, modifier = Modifier.fillMaxWidth())
             Button(
-                onClick = ::submit, enabled = key.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth().size(height = 48.dp, width = 0.dp),
+                onClick = ::submit, enabled = server.isNotBlank() && (firstRun || key.isNotBlank()) && !busy, modifier = Modifier.fillMaxWidth().size(height = 48.dp, width = 0.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Color(0xFF14110A)),
             ) {
-                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color(0xFF14110A)) else Text("Continue", fontWeight = FontWeight.SemiBold)
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color(0xFF14110A)) else Text(if (firstRun) "Connect" else "Continue", fontWeight = FontWeight.SemiBold)
             }
         }
     }

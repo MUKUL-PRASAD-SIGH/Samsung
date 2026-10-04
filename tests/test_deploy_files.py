@@ -113,3 +113,13 @@ def test_pyinstaller_spec_is_valid_python_and_keeps_torch_out():
 def test_installer_script_installs_the_pyinstaller_output():
     iss = (ROOT / "packaging/installer.iss").read_text()
     assert r"..\dist\Kairos\*" in iss and "Kairos.exe" in iss and "AppVersion" in iss
+
+
+def test_android_build_workflow_is_valid_and_builds_a_versioned_apk():
+    text = (ROOT / ".github/workflows/build-android.yml").read_text()
+    wf = yaml.safe_load(text)
+    assert wf["permissions"]["contents"] == "write" and "apk" in wf["jobs"]
+    for needle in ("assembleDebug", "kairosVersion", "apksigner\" verify", "gh release upload", "ANDROID_KEYSTORE_B64"):
+        assert needle in text
+    gradle = (ROOT / "android/app/build.gradle.kts").read_text()
+    assert "kairosVersion" in gradle and "KAIROS_KEYSTORE" in gradle

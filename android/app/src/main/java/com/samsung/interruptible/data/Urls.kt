@@ -45,6 +45,16 @@ object Urls {
         }
     }
 
+    /** A host on this device or a private network (RFC 1918, link-local, `.local`): where a home PC running Kairos lives. */
+    fun isPrivateOrLocal(server: String): Boolean {
+        val s = server.trim().lowercase()
+        val host = s.substringAfter("://", s).substringBefore('/').substringBefore(':')
+        if (host in setOf("localhost", "127.0.0.1", "10.0.2.2", "10.0.3.2", "[::1]") || host.endsWith(".local")) return true
+        val p = host.split('.').mapNotNull { it.toIntOrNull() }
+        if (p.size != 4 || host.split('.').size != 4) return false
+        return p[0] == 10 || (p[0] == 172 && p[1] in 16..31) || (p[0] == 192 && p[1] == 168) || (p[0] == 169 && p[1] == 254) || p[0] == 127
+    }
+
     /** True when traffic (and the access token) would cross a network unencrypted. Loopback and emulator addresses are fine. */
     fun isInsecureRemote(server: String): Boolean {
         val s = server.trim().lowercase()

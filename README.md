@@ -168,7 +168,18 @@ Results are written to `eval_results/`.
 ## Android app
 
 A native Kotlin/Compose client (`android/`) with chat, hands-free voice and barge-in, spoken replies, camera sharing and the state/trace/graph views.
-See [android/README.md](android/README.md) for building (Android Studio or Docker), the protocol contract shared with the server, and its 98 tests.
+See [android/README.md](android/README.md) for building (Android Studio or Docker), the protocol contract shared with the server, and its 143 JVM tests.
+
+**Download the APK:** `Kairos-Android-<version>.apk` is attached to the [Releases](../../releases) page (built by `.github/workflows/build-android.yml`).
+Enable "install unknown apps" for your browser, open the file, and install. The agent itself runs on a computer, so first start Kairos there
+(the Windows app above, `kairos --host 0.0.0.0` from source, or Docker). On the phone:
+
+1. **Connect:** the first screen asks for the computer's address, for example `ws://192.168.1.20:8000` (same Wi-Fi), plus the access key
+   Kairos prints in its window when you serve a network (leave it empty if the computer does not ask for one).
+2. **API keys:** if that Kairos has no LLM key yet, the app offers a form for your **Groq** and/or **OpenRouter** key (also under
+   Settings → API keys). The server checks the key with the provider and stores it on the computer; the phone never keeps it.
+3. The microphone and camera work from the phone itself. For use away from home, serve Kairos over HTTPS (`wss://`); the app refuses to send
+   keys unencrypted to a public address.
 
 ## Deployment
 

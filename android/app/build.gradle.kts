@@ -13,13 +13,31 @@ android {
         applicationId = "com.samsung.interruptible"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // CI passes -PkairosVersion=1.2.3 -PkairosVersionCode=<run number>; local builds stay 1.0 / 1.
+        versionCode = (findProperty("kairosVersionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (findProperty("kairosVersion") as String?) ?: "1.0"
         // Where the backend is by default: 10.0.2.2 is the host machine as seen from the Android emulator.
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"ws://10.0.2.2:8000\"")
     }
 
+    // Optional stable signing identity (CI secrets). Without it the APK is signed with the machine's auto-generated debug key, which
+    // is fine to sideload but differs on every CI runner, so a newer build cannot update an older install (uninstall first).
+    val keystorePath = System.getenv("KAIROS_KEYSTORE")
+    if (!keystorePath.isNullOrBlank()) {
+        signingConfigs {
+            create("kairos") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("KAIROS_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KAIROS_KEY_ALIAS") ?: "kairos"
+                keyPassword = System.getenv("KAIROS_KEY_PASSWORD") ?: System.getenv("KAIROS_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
+        if (!keystorePath.isNullOrBlank()) {
+            getByName("debug") { signingConfig = signingConfigs.getByName("kairos") }
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
